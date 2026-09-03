@@ -26,6 +26,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         resp.headers['X-Content-Type-Options'] = 'nosniff'
         resp.headers['X-Frame-Options'] = 'DENY'
         resp.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
         # أندرويد قديم يفسر (self) بصرامة فيمنع الميكروفون عبر النفق — نسمح صراحة
         resp.headers['Permissions-Policy'] = 'microphone=*, camera=(), geolocation=()'
         return resp
