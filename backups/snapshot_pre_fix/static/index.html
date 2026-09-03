@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuba AI — المترجم الشخصي</title>
+<style>
+:root{--bg:#0a0f1e;--card:#131b31;--card2:#1c2745;--txt:#eef3fb;--dim:#8ea3c2;--gold:#c9a227;--a:#3ba7ff;--mic:#e5484d}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:system-ui,'Segoe UI',Tahoma,sans-serif;background:radial-gradient(1000px 600px at 80% -10%,#1b2b52 0%,var(--bg) 55%);color:var(--txt);min-height:100vh}
+header{padding:18px 20px 10px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:12px}
+.logo .mark{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#c9a227,#8a6d1d);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:22px;color:#fff}
+.logo b{font-size:1.15rem;letter-spacing:.5px}
+.logo small{display:block;color:var(--dim);font-size:.72rem}
+#netStatus{font-size:.8rem;color:var(--dim)}
+#netStatus.on{color:#39d98a}
+main{max-width:820px;margin:0 auto;padding:0 16px 120px}
+.tagline{text-align:center;color:var(--dim);margin:4px 0 18px;font-size:.95rem}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:2px solid #26335a;border-radius:16px;padding:14px;cursor:pointer;transition:.25s;position:relative}
+.card.active{border-color:var(--a);box-shadow:0 0 22px rgba(59,167,255,.25)}
+.card.b.active{border-color:var(--gold);box-shadow:0 0 22px rgba(201,162,39,.25)}
+.card h3{margin:0 0 10px;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
+select{width:100%;background:var(--card2);border:1px solid #2f3c5c;color:var(--txt);border-radius:10px;padding:10px;font-size:1rem}
+.voice-tag{margin-top:8px;font-size:.75rem;color:var(--dim)}
+.voice-tag b{color:var(--a)}
+.card.b .voice-tag b{color:var(--gold)}
+#micWrap{text-align:center;margin:26px 0 6px}
+#micBtn{width:92px;height:92px;border-radius:50%;border:none;background:var(--mic);color:#fff;font-size:2.3rem;cursor:pointer;box-shadow:0 8px 28px rgba(229,72,77,.45)}
+#micBtn.rec{animation:pulse 1.3s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(229,72,77,.5)}70%{box-shadow:0 0 0 24px rgba(229,72,77,0)}100%{box-shadow:0 0 0 0 rgba(229,72,77,0)}}
+#micLabel{margin-top:10px;color:var(--dim);font-size:.9rem}
+#interim{text-align:center;min-height:24px;color:var(--dim);margin:8px 0 4px;font-size:1rem}
+#log{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.line{display:flex;gap:8px;align-items:flex-start}
+.line .who{font-size:.7rem;color:var(--dim);white-space:nowrap;padding-top:5px;min-width:48px}
+.line .txt{background:var(--card2);border-radius:12px;padding:9px 13px;font-size:1.05rem;line-height:1.6;flex:1;border-inline-start:3px solid var(--a)}
+.line.heard .txt{border-inline-start:3px solid var(--gold);background:#263048}
+.line.err .txt{border-inline-start:3px solid #ff6b6b;color:#ffb3b3}
+footer{position:fixed;bottom:0;left:0;right:0;background:rgba(10,15,30,.92);border-top:1px solid #26335a;padding:10px 16px;text-align:center;font-size:.78rem;color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><div class="mark">N</div><div><b>Nuba AI</b><small>المترجم الشخصي الفوري</small></div></div>
+  <span id="netStatus">جارٍ الفحص…</span>
+</header>
+<main>
+  <div style="text-align:center;margin:10px 0 18px">
+    <a href="/live.html" style="display:inline-block;background:linear-gradient(90deg,#c9a227,#8a6d1d);color:#fff;font-weight:800;padding:12px 28px;border-radius:12px;text-decoration:none;font-size:1.05rem">🔴 وضع المؤتمرات الحي (بدون زر — ترجمة لحظية)</a>
+  </div>
+  <p class="tagline">🎙️ تحدث بصوتك — يُترجم فوراً وينطق بصوت عربي حقيقي (Telnyx Bayan)</p>
+  <div class="grid">
+    <div class="card" id="cardA">
+      <h3><span>🔵 الطرف الأول</span></h3>
+      <select id="langA"></select>
+      <div class="voice-tag">الصوت الناطق: <b>Telnyx</b></div>
+    </div>
+    <div class="card b" id="cardB">
+      <h3><span>🟠 الطرف الثاني</span></h3>
+      <select id="langB"></select>
+      <div class="voice-tag">الصوت الناطق: <b>Telnyx Bayan</b></div>
+    </div>
+  </div>
+  <div id="micWrap">
+    <button id="micBtn">🎤</button>
+    <div id="micLabel">اضغط وابدأ الكلام — واضغط مرة أخرى لإنهاء الجملة</div>
+  </div>
+  <div id="interim"></div>
+  <div id="log"></div>
+</main>
+<footer>Nuba AI v0.2 — محركات Telnyx الموحدة · STT + TTS بمفتاح واحد</footer>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const LANGS=[
+ {c:"ar",n:"العربية",v:"Telnyx.Bayan"},
+ {c:"en",n:"English",v:"Telnyx.Kokoro"},
+ {c:"fr",n:"Français",v:"Telnyx.Kokoro"},
+ {c:"tr",n:"Türkçe",v:"Telnyx.Kokoro"},
+ {c:"ur",n:"اردو",v:"Telnyx.Sukhan"},
+ {c:"es",n:"Español",v:"Telnyx.Kokoro"},
+ {c:"de",n:"Deutsch",v:"Telnyx.Kokoro"},
+ {c:"ru",n:"Русский",v:"Telnyx.Kokoro"},
+ {c:"hi",n:"हिन्दी",v:"Telnyx.Kokoro"},
+ {c:"zh-CN",n:"中文",v:"Telnyx.Kokoro"},
+];
+let active="a",recording=false,processing=false;
+function langOf(k){return LANGS[+$(k==="a"?"#langA":"#langB").value];}
+function fill(sel){const s=$(sel);s.innerHTML=LANGS.map((l,i)=>`<option value="${i}">${l.n}</option>`).join("");s.value=sel==="#langA"?0:1;}
+fill("#langA");fill("#langB");
+$("#cardA").onclick=()=>{active="a";ui();};
+$("#cardB").onclick=()=>{active="b";ui();};
+function ui(){
+ $("#cardA").classList.toggle("active",active==="a");
+ $("#cardB").classList.toggle("active",active==="b");
+ $("#micBtn").classList.toggle("rec",recording);
+ $("#micLabel").textContent=recording
+  ?`يسجّل كلام الطرف ${active==="a"?"الأول":"الثاني"} (${langOf(active).n}) — اضغط مرة أخرى للإنهاء`
+  :"اضغط وابدأ الكلام — واضغط مرة أخرى لإنهاء الجملة";
+}
+function addLine(who,type,text){
+ const log=$("#log"),d=document.createElement("div");
+ d.className="line "+type;
+ d.innerHTML=`<span class="who">${who==="a"?"🔵":"🟠"}</span><span class="txt"></span>`;
+ d.querySelector(".txt").textContent=text;
+ log.prepend(d);
+ while(log.children.length>100)log.lastChild.remove();
+}
+let mediaRec,chunks;
+async function startRec(){
+ const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+ chunks=[];
+ mediaRec=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?"audio/webm;codecs=opus":"audio/webm"});
+ mediaRec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+ mediaRec.onstop=async()=>{
+  stream.getTracks().forEach(t=>t.stop());
+  const blob=new Blob(chunks,{type:"audio/webm"});
+  if(blob.size<2000){$("#interim").textContent="لم أسمع صوتاً — تحدث بصوت أعلى";return;}
+  processing=true;
+  $("#interim").textContent="⏳ جارٍ التعرف على الكلام…";
+  try{
+   const fd=new FormData();
+   fd.append("audio",blob,"speech.webm");
+   fd.append("lang",langOf(active).c);
+   const r=await fetch("/api/stt",{method:"POST",body:fd});
+   const j=await r.json();
+   if(!r.ok)throw new Error(j.detail||"خطأ");
+   if(!j.text){$("#interim").textContent="لم أفهم — جرّب مجدداً";return;}
+   addLine(active,"said",j.text);
+   const listener=active==="a"?"b":"a";
+   $("#interim").textContent="⏳ جارٍ الترجمة…";
+   const tr=await fetch("/api/translate?text="+encodeURIComponent(j.text)+"&target="+encodeURIComponent(langOf(listener).c));
+   const tj=await tr.json();
+   if(!tr.ok)throw new Error(tj.detail||"خطأ ترجمة");
+   addLine(listener,"heard",tj.text);
+   $("#interim").textContent="🔊 ينطق الآن…";
+   const au=new Audio("/api/tts?text="+encodeURIComponent(tj.text)+"&lang="+encodeURIComponent(langOf(listener).c));
+   await new Promise(res=>{au.onended=au.onerror=res;au.play().catch(res);});
+   active=listener;
+  }catch(err){addLine(active,"err","⚠️ "+err.message);}
+  processing=false;ui();
+  $("#interim").textContent="";
+ };
+ mediaRec.start();recording=true;ui();
+}
+$("#micBtn").onclick=async()=>{
+ if(recording){recording=false;mediaRec.stop();ui();return;}
+ if(processing)return;
+ try{
+  const s=await navigator.mediaDevices.getUserMedia({audio:true});
+  s.getTracks().forEach(t=>t.stop());
+ }catch(e){alert("اسمح بالميكروفون من إعدادات الموقع 🔒 ثم أعد المحاولة");return;}
+ startRec();
+};
+fetch("/api/health").then(r=>{const s=$("#netStatus");s.textContent=r.ok?"● متصل — الخدمة تعمل":"● غير متصل";s.classList.toggle("on",r.ok);}).catch(()=>{$("#netStatus").textContent="● لا اتصال";});
+ui();
+</script>
+</body>
+</html>

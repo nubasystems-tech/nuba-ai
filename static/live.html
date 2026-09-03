@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuba AI Live v9 — مترجم المؤتمرات</title>
+<style>
+:root{--bg:#0a0f1e;--card:#131b31;--card2:#1c2745;--txt:#eef3fb;--dim:#8ea3c2;--gold:#c9a227;--mic:#e5484d;--live:#ff3b30}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:system-ui,'Segoe UI',Tahoma,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
+header{padding:16px 20px 8px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px}
+.logo .mark{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#c9a227,#8a6d1d);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:20px}
+.logo b{font-size:1.05rem}
+.logo small{display:block;color:var(--dim);font-size:.7rem}
+#liveBadge{display:none;align-items:center;gap:7px;background:rgba(255,59,48,.15);border:1px solid var(--live);color:#ff8a80;font-size:.85rem;padding:6px 14px;border-radius:100px;font-weight:700}
+#liveBadge.on{display:inline-flex}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--live);animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.3}}
+main{max-width:900px;margin:0 auto;padding:8px 16px 130px}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}
+select{background:var(--card2);border:1px solid #2f3c5c;color:var(--txt);border-radius:10px;padding:10px;font-size:1rem}
+button.go{background:linear-gradient(90deg,#2451a3,#2f7bff);border:none;color:#fff;font-weight:800;font-size:1rem;padding:12px 26px;border-radius:12px;cursor:pointer}
+button.go:disabled{opacity:.5}
+#status{font-size:.85rem;color:var(--dim)}
+#meter{height:6px;background:#1c2745;border-radius:4px;overflow:hidden;margin:6px 0 18px}
+#meterFill{height:100%;width:0;background:linear-gradient(90deg,#39d98a,#ffb03b,#e5484d);transition:width .1s}
+#feed{display:flex;flex-direction:column;gap:10px}
+.utt{background:var(--card);border-radius:14px;padding:12px 14px;border-inline-start:3px solid #3ba7ff}
+.utt .src{color:#b9c8e2;font-size:.98rem}
+.utt .tr{color:#ffd97a;font-size:1.12rem;font-weight:600;margin-top:6px}
+.utt.pending{opacity:.6}
+.utt .t{font-size:.7rem;color:var(--dim);text-align:left;margin-top:4px}
+footer{position:fixed;bottom:0;left:0;right:0;background:rgba(10,15,30,.95);border-top:1px solid #26335a;padding:10px;text-align:center;font-size:.75rem;color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><div class="mark">N</div><div><b>Nuba AI <span style="color:#c9a227">Live</span></b><small>مترجم المؤتمرات الفوري</small></div></div>
+  <span id="liveBadge"><span class="dot"></span> بث مباشر</span>
+</header>
+<main>
+  <div class="controls">
+    <select id="srcLang">
+      <option value="en" selected>🇬🇧 المتحدث: إنجليزي</option>
+      <option value="ar">🇸🇦 المتحدث: عربي</option>
+      <option value="zh-CN">🇨🇳 المتحدث: صيني</option>
+      <option value="auto">🌍 القاعة: تلقائي متعدد اللغات</option>
+      <option value="fr">🇫🇷 فرنسي</option>
+      <option value="tr">🇹🇷 تركي</option>
+      <option value="de">🇩🇪 ألماني</option>
+      <option value="es">🇪🇸 إسباني</option>
+      <option value="ru">🇷🇺 روسي</option>
+      <option value="ja">🇯🇵 ياباني</option>
+      <option value="ko">🇰🇷 كوري</option>
+      <option value="hi">🇮🇳 هندي</option>
+      <option value="ur">🇵🇰 أردو</option>
+      <option value="fa">🇮🇷 فارسي</option>
+      <option value="it">🇮🇹 إيطالي</option>
+      <option value="pt">🇵🇹 برتغالي</option>
+    </select>
+    <select id="myLang">
+      <option value="ar" selected>أسمع: عربي 🇸🇦</option>
+      <option value="en">I hear: English 🇬🇧</option>
+      <option value="zh-CN">我听: صيني 🇨🇳</option>
+      <option value="fr">J'écoute: فرنسي 🇫🇷</option>
+      <option value="tr">Duyorum: تركي 🇹🇷</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--dim)"><input type="checkbox" id="ttsToggle"> نطق صوتي (يثقل الاتصال)</label>
+    <button class="go" id="goBtn">▶ ابدأ البث الحي</button>
+    <span id="status"></span>
+  </div>
+  <div id="meter"><div id="meterFill"></div></div>
+  <div id="feed"></div>
+</main>
+<footer>Nuba AI v3.0 Live — nova-3 streaming + ترجمة فورية + Telnyx TTS · يعمل بالساعات بلا زر</footer>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let ws=null, audioCtx=null, proc=null, stream=null, running=false, lastSend=0, lastStatusLock=false;
+
+function status(t){$("#status").textContent=t;}
+const LANG_FLAG={ar:"🇸🇦",en:"🇬🇧","zh-CN":"🇨🇳",fr:"🇫🇷",tr:"🇹🇷",de:"🇩🇪",es:"🇪🇸",ru:"🇷🇺"};
+function addUtt(src, tr, speakerLang){
+ const d=document.createElement("div");
+ d.className="utt";
+ d.innerHTML=`<div class="src"></div>${tr?'<div class="tr"></div>':''}<div class="t">${new Date().toLocaleTimeString()}</div>`;
+ d.querySelector(".src").textContent=src;
+ if(tr) d.querySelector(".tr").textContent=tr;
+ $("#feed").prepend(d);
+ while($("#feed").children.length>300) $("#feed").lastChild.remove();
+}
+
+async function startLive(){
+ if(running) return;
+ const src=$("#srcLang").value, mine=$("#myLang").value;
+ const wantTts=$("#ttsToggle") && $("#ttsToggle").checked ? "1" : "0";
+ const proto=location.protocol==="https:"?"wss":"ws";
+ // 🌍 وضع القاعة: srcLang=auto → نفس الصوت لكل اللغات بالتوازي، الترجمة تتبدل مع المتحدث
+ const endpoint = src==="auto" ? `/ws/multi?tts_lang=${mine}` : `/ws/live?lang=${src}&tts_lang=${mine}&tts=${wantTts}`;
+ ws=new WebSocket(`${proto}://${location.host}${endpoint}`);
+ ws.onopen=async()=>{
+   // 🛡️ Wake Lock: يمنع أندرويد من إطفاء الشاشة وقتل الاتصال أثناء المؤتمر
+   try{
+     if("wakeLock" in navigator){
+       window._wakeLock = await navigator.wakeLock.request("screen");
+       document.addEventListener("visibilitychange", async ()=>{
+         if(window._wakeLock && document.visibilityState==="visible"){
+           window._wakeLock = await navigator.wakeLock.request("screen");
+         }
+       });
+     }
+   }catch(e){}
+   running=true;
+   $("#goBtn").disabled=true;
+   $("#liveBadge").classList.add("on");
+   status("✅ البث يبدأ — تحدث الآن (لا زر إيقاف)");
+   audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+   // ⚠️ المؤتمرات: نعطل كتم ضجيج المتصفح — يعتبر صوت مكبر القاعة "ضجيجاً" فيمحو كلام المتحدث!
+   // التنظيف كله في الخادم (AGC + highpass + noise gate). autoGainControl أيضاً يفسد قياساتنا.
+   // 🔊 الصوت الخافت من هواتف معينة: نستخدم إعدادات المتصفح الافتراضية كاملة
+   // (معطّلات الضبط كانت تخنق الميكروفون في بعض أجهزة أندرويد → صوت شبه ميت)
+   // + نضاعف مستوى الصوت ×3 في المتصفح قبل الإرسال مباشرة:
+   try{
+     stream=await navigator.mediaDevices.getUserMedia({audio:true});
+   }catch(err){
+     status("❌ الميكروفون مرفوض — اضغط 🔒 أعلى المتصفح واسمح بالميكروفون");
+     running=false; $("#goBtn").disabled=false;
+     return;
+   }
+   const gainNode=audioCtx.createGain();
+   gainNode.gain.value=3.0;  // تضخيم مبدئي في المتصفح — AGC الخادم يكمل الباقي
+   // إبقاء الصوت حياً حتى لو صغّر المتصفح (أندرويد يوقف الكapture عند إخفاء الصفحة)
+   audioCtx.onstatechange=()=>{ if(audioCtx.state==="suspended") audioCtx.resume(); };
+   const srcNode=audioCtx.createMediaStreamSource(stream);
+   proc=audioCtx.createScriptProcessor(4096,1,1);
+   // مؤشر مستوى الصوت
+   const analyser=audioCtx.createAnalyser();
+   gainNode.connect(analyser);   // نقيس بعد التضخيم ×3 (الصوت الفعلي الذي يُرسل للخادم)
+   const buf=new Uint8Array(analyser.frequencyBinCount);
+   let lastLvlBand=-1;
+   setInterval(()=>{
+     if(!running) return;
+     analyser.getByteTimeDomainData(buf);
+     let peak=0;
+     for(const v of buf) peak=Math.max(peak,Math.abs(v-128));
+     const lvl=(peak/128)*100;
+     $("#meterFill").style.width=Math.min(100,lvl)+"%";
+     // مؤشر حالة واضح بلا وميض مزعج: يتغير فقط عند تغير النطاق
+     const band = lvl<4 ? 0 : lvl<10 ? 1 : 2;
+     if(band!==lastLvlBand){
+       lastLvlBand=band;
+       if(band===0) status("🔇 لا يصلنا صوت — تأكد أن الميكروفون يلتقط");
+       else if(band===1) status("🟡 صوت خفيف — الاقتراب من السماعة يحسّن الالتقاط");
+       else if(!lastStatusLock) status("🟢 الصوت ممتاز — الترجمة تعمل");
+     }
+   },600);
+   srcNode.connect(gainNode);
+   gainNode.connect(proc);
+   proc.connect(audioCtx.destination);
+   proc.onaudioprocess=e=>{
+     if(!ws||ws.readyState!==1) return;
+     const pcm=e.inputBuffer.getChannelData(0);
+     // float32 → int16
+     const i16=new Int16Array(pcm.length);
+     for(let i=0;i<pcm.length;i++){
+       const s=Math.max(-1,Math.min(1,pcm[i]));
+       i16[i]=s<0?s*0x8000:s*0x7FFF;
+     }
+     ws.send(i16.buffer);
+     lastSend=Date.now();
+   };
+   // نبض صامت يمنع وسطاء الشبكة من قطع الاتصال الخامل
+   setInterval(()=>{
+     if(ws&&ws.readyState===1&&Date.now()-lastSend>8000){
+       ws.send(new Int16Array(1600).buffer); // 100ms صمت
+       lastSend=Date.now();
+     }
+   },9000);
+ };
+ ws.onmessage=ev=>{
+   let m; try{m=JSON.parse(ev.data);}catch{return;}
+   if(m.type==="ready"){status("✅ الاتصال جاهز — تحدث الآن");}
+ else if(m.type==="source_partial"){
+     // 📡 نص لحظي خفيف — يظهر فور نطقه (بلا انتظار اكتمال الفكرة)
+     const el=document.getElementById("partialBox")||(()=>{const d=document.createElement("div");d.id="partialBox";d.style.cssText="background:#0d1428;border:1px solid #2a3a5f;border-radius:10px;padding:8px 12px;margin:6px 0;font-size:13px;color:#9fb4d8;min-height:18px";$(".controls").after(d);return d;})();
+     el.textContent="📝 "+m.text;
+   }
+   else if(m.type==="source"){addUtt((LANG_FLAG[m.speaker_lang]||"")+" "+m.text,null,m.speaker_lang);}
+   else if(m.type==="translation"){
+     // أرفق الترجمة بآخر جملة بلا ترجمة
+     const first=$("#feed").querySelector(".utt:not(.done)");
+     if(first){
+       const tr=document.createElement("div");tr.className="tr";tr.textContent=m.text;
+       first.appendChild(tr);first.classList.add("done");
+     }
+   }
+   else if(m.type==="tts"){
+     // data-URI يصل عبر WebSocket نفسه — لا تحميل ملفات إضافي عبر النفق
+     const a=new Audio(m.url); a.volume=0.95; a.play().catch(()=>{});
+   }
+ };
+ ws.onclose=()=>{stopLive();};
+ ws.onerror=()=>{status("⚠️ انقطع الاتصال — أعد المحاولة");};
+}
+function stopLive(){
+ running=false;
+ if(stream) stream.getTracks().forEach(t=>t.stop());
+ if(proc){try{proc.disconnect()}catch(e){}}
+ if(audioCtx){try{audioCtx.close()}catch(e){}}
+ if(ws){try{ws.close()}catch(e){}ws=null;}
+ $("#goBtn").disabled=false;
+ $("#liveBadge").classList.remove("on");
+ status("⏹️ توقف البث");
+}
+$("#goBtn").onclick=()=>{
+ if(!running){
+   // فتح مباشر بلا إغلاق مسارات مسبق — إغلاق المسار ثم إعادة فتحه يقتل الميكروفون على أندرويد
+   startLive();
+ }
+};
+</script>
+</body>
+</html>
