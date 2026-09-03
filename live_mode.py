@@ -4,6 +4,7 @@
 - نبض بين المتصفح والخادم: ping/pong يمنع وسطاء الشبكة (cloudflare) من القطع
 """
 import asyncio
+import stt_bridge
 import metrics
 from pathlib import Path
 import json
@@ -20,6 +21,19 @@ import os
 TELNYX_KEY = os.environ.get("TELNYX_STT_API_KEY", "")
 
 SILENCE_250MS = b"\x00\x00" * 4000  # صمت ربع ثانية للنبض
+
+
+def _engine_url(lang: str) -> str:
+    """عنوان upstream حسب اللغة (نفس المنطق السابق لكن بمعرف)."""
+    if lang.startswith("ar"):
+        engine, extra = "Cohere", ""
+        ep = 300
+    else:
+        engine, extra = "Deepgram", "&model=deepgram/nova-3"
+        ep = 300 if lang.startswith("zh") else 200
+    return (f"wss://api.telnyx.com/v2/speech-to-text/transcription?"
+            f"transcription_engine={engine}&input_format=linear16&sample_rate=16000"
+            f"&language={lang}{extra}&endpointing={ep}")
 
 
 async def _connect_upstream(lang: str):
@@ -216,19 +230,29 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
     activity = [time.time()]  # آخر نشاط صوتي (قائمة قابلة للتعديل عبر الإغلاق)
     pending: asyncio.Queue = asyncio.Queue(maxsize=512)  # PCM من المتصفح بين إعادة الاتصالات
 
-    async def connect_and_drain():
-        """يفتح upstream، يصرف pending، ثم يضخ البث الجديد."""
-        nonlocal upstream
-        upstream = await _connect_upstream(src_lang)
+    bridge_id = f"live_{id(user_ws)}"
+
+    def connect_and_drain():
+        """يفتح محرك عبر الجسر المستقل (خيط منفصل — حل علة بطء uvicorn المزمن:
+        القياس 2026-09-03: نفس الصوت +0.3s خارج uvicorn مقابل +8.3s داخله!).
+        ثم يصرف pending عبر الجسر."""
+        url = _engine_url(src_lang)
+        r = stt_bridge.open_stream(bridge_id, url)
+        if r != "OK":
+            print(f"[live] فشل فتح الجسر: {r}", flush=True)
+            return False
         drained = 0
         while not pending.empty():
             try:
-                await upstream.send(pending.get_nowait())
-                drained += 1
+                if stt_bridge.send_audio(bridge_id, pending.get_nowait()):
+                    drained += 1
+                else:
+                    break
             except Exception:
                 break
         if drained:
             print(f"[live] استأنف البث بعد إعادة الاتصال: {drained} chunk", flush=True)
+        return True
 
     async def pump():
         """من المتصفح → AGC (رفع الصوت الضعيف) → pending → upstream."""
@@ -247,83 +271,84 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                 if n_recv == 20 or n_recv == 100:
                     print(f"[live] AGC: chunk#{n_recv} gain={agc_state[0]:.1f}x", flush=True)
                 await pending.put(pcm)
-                if upstream and upstream.state.name == "OPEN":
-                    while not pending.empty():
-                        await upstream.send(pending.get_nowait())
+                while not pending.empty():
+                    if not stt_bridge.send_audio(bridge_id, pending.get_nowait()):
+                        # فشل إرسال: أعد فتح الجسر وصرف المتبقي
+                        stt_bridge.close_stream(bridge_id)
+                        connect_and_drain()
             except (WebSocketDisconnect, Exception) as e:
                 print(f"[live] pump انتهى: {type(e).__name__}: {str(e)[:80]}", flush=True)
                 return
 
     async def keepalive_upstream():
-        """نبض صامت يحافظ على الاتصال — بعد 8s خمول (قياس ميداني: 15s متأخر جداً
-        — upstream مات بعد ~10s صمت وأعيد الاتصال ضائعاً 14 chunk)."""
+        """🎯 كاشف السرعة الحقيقي (قياس 2026-09-03 18:1x):
+        is_final لا يصل من المحرك إلا عند وصول صوت/صمت جديد بعده —
+        بدونه جملتك تنتظر كلامك التالي = 8 ثوان تأخير ("الترجمة متأخرة جدا").
+        الحل: نبض صامت 350ms بعد آخر كلام — يحرر نتيجة جملتك فوراً."""
         while True:
-            await asyncio.sleep(2)
-            if upstream and upstream.state.name == "OPEN":
-                if time.time() - activity[0] > 8:
-                    try:
-                        await upstream.send(SILENCE_250MS)
-                    except Exception:
-                        pass
+            await asyncio.sleep(0.35)
+            if time.time() - activity[0] > 0.25:
+                stt_bridge.send_audio(bridge_id, SILENCE_250MS)
 
     async def collect():
-        nonlocal upstream, _fragments, _frag_last, _frag_tasks, _recent_sent, _tr_inflight
+        """🚀 الاستقبال عبر جسر الخيط المستقل (stt_bridge):
+        قياس 2026-09-03: داخل uvicorn يصل is_final بعد +8.3s من نهاية الكلام
+        بينما نفس الصوت خارجها +0.3s — علة event loop مؤكدة بعد 14 تشخيصاً.
+        الجسر يدير websocket المحرك في حلقة مستقلة ونستقبل بالpoll السريع."""
+        nonlocal _fragments, _frag_last, _frag_tasks, _recent_sent, _tr_inflight
         reconnect_backoff = 0
+        if not connect_and_drain():
+            return
         while True:
             try:
-                if not upstream or upstream.state.name != "OPEN":
-                    await connect_and_drain()
-                    reconnect_backoff = 0
-                raw = await asyncio.wait_for(upstream.recv(), timeout=60)
-                if isinstance(raw, bytes):
+                results = stt_bridge.poll_results(bridge_id, max_items=8)
+                if not results:
+                    await asyncio.sleep(0.04)
+                    # فحص حياة الجسر: نبض خفيف كل 30s
                     continue
-                d = json.loads(raw)
-                if "errors" in d:
-                    continue
-                if d.get("is_final") and d.get("transcript"):
+                for d in results:
+                    if "errors" in d or d.get("type") in ("error", "closed"):
+                        if d.get("type") == "closed":
+                            # المحرك سقط — إعادة فتح شفافة
+                            stt_bridge.close_stream(bridge_id)
+                            reconnect_backoff = min(reconnect_backoff + 1, 4)
+                            await asyncio.sleep(0.5 * reconnect_backoff)
+                            connect_and_drain()
+                        continue
+                    if not (d.get("is_final") and d.get("transcript")):
+                        continue
                     text = str(d["transcript"]).strip()
                     if not text:
                         continue
-                    # 🛡️ فلتر الهلوسة والتكرار (قياس مؤتمر حقيقي: nova-3 عند الكلام المتواصل
-                    # بلا صمت يعيد نافذته الداخلية → نفس الجملة تصل 30+ مرة من مواضع مقطوعة):
-                    # نتجاهل أي شظية مكررة أو شبه جزء من دفعة أرسلناها خلال آخر 8 ثوانٍ
-                    _norm = lambda s: " ".join(s.lower().split())
+                    # 🛡️ فلتر الهلوسة والتكرار (قياس مؤتمر حقيقي)
+                    _norm = lambda x: " ".join(x.lower().split())
                     _tn = _norm(text)
-                    # 🛡️ فلتر التكرار (مقاس ميدانياً: nova-3 يعيد نافذته الداخلية حرفياً)
-                    # نحجب فقط التكرار الحرفي الكامل أو الاحتواء — ليس التشابه السطحي
-                    # (قياس: مقارنة أول 30 حرفاً حجبت جمل مؤتمر حقيقية مختلفة الأوائل!)
                     _wc = len(_tn.split())
                     _dupe = False
-                    for p in _recent_sent[-8:]:
-                        if _tn == p:                      # تكرار حرفي (هلوسة nova-3 المؤكدة)
+                    for prev in _recent_sent[-8:]:
+                        if _tn == prev:
                             _dupe = True; break
-                        # احتواء فقط لو الجملة الجديدة قصيرة (شظية معلقة أُعيد إرسالها)
-                        if _wc <= 4 and (_tn in p or p in _tn):
+                        if _wc <= 4 and (_tn in prev or prev in _tn):
                             _dupe = True; break
                     if _dupe:
-                        continue  # تكرار/هلوسة — نتجاهله بلا إزعاج
+                        continue
                     _recent_sent.append(_tn)
                     if len(_recent_sent) > 40:
                         _recent_sent.pop(0)
-                    # 🎯 تجميع بالكلمات (تكيّفي مع سرعة المتحدث):
-                    # نترجم كل 7+ كلمات فور اكتمالها — متحدث سريع: تصل أسرع، بطيء: أطول.
-                    # لا نافذة زمنية تقص أو تنتظر — العدّاد نفسه هو المحرك.
-                    now = time.time()
-                    # 📡 إرسال النص فوراً (partial) — المستخدم يقرأ لحظياً بلا انتظار:
+                    # 📡 partial فوري — المستخدم يقرأ أثناء الكلام
                     try:
                         await user_ws.send_json({"type": "source_partial", "text": text})
                     except Exception:
                         pass
+                    # 🎯 تجميع بالكلمات (تكيّفي مع سرعة المتحدث)
+                    now = time.time()
                     if _fragments and (now - _frag_last) <= 2.5:
-                        # شظية متابعة لنفس الفكرة الجارية
                         _fragments.append(text)
                     else:
-                        # انقطاع زمني = فكرة جديدة: أطلق السابقة فوراً إن كانت قائمة
                         if _fragments:
                             asyncio.create_task(_flush_fragments())
                         _fragments = [text]
                     _frag_last = now
-                    # ⚡ قاعدة السرعة: بلغنا 7 كلمات؟ ترجم فوراً بلا انتظار إغلاق زمني
                     word_count = sum(len(f.split()) for f in _fragments)
                     if word_count >= 5:
                         asyncio.create_task(_flush_fragments())
@@ -332,31 +357,12 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                         if _fragments and _frag_last and (time.time() - _frag_last) >= 0.55:
                             asyncio.create_task(_flush_fragments())
                     _frag_tasks.append(asyncio.create_task(_closer()))
-            except asyncio.TimeoutError:
-                # لا نتائج 60s — نفتح اتصالاً جديداً كوقاية
-                try:
-                    if upstream:
-                        await upstream.close()
-                except Exception:
-                    pass
-                upstream = None
+            except asyncio.CancelledError:
+                return
             except Exception as e:
-                # upstream سقط — إعادة اتصال تلقائية (الجلسة تستمر)
-                reconnect_backoff = min(reconnect_backoff + 1, 4)
-                try:
-                    if upstream:
-                        await upstream.close()
-                except Exception:
-                    pass
-                upstream = None
-                await asyncio.sleep(1.5 * reconnect_backoff)
-
-    # فتح upstream فوراً قبل البث — يمنع تأخير الدفعات الأولى (batch effect)
-    try:
-        upstream = await _connect_upstream(src_lang)
-    except Exception as e:
-        print(f"[live] فشل فتح upstream مبدئياً ({type(e).__name__}) — ستتم المحاولة عند البث", flush=True)
-        upstream = None
+                # خطأ غير متوقع — دورة أمان قصيرة
+                await asyncio.sleep(0.3)
+    # (الفتح يتم الآن داخل collect عبر الجسر فوراً عند بدء الجلسة)
 
     await asyncio.gather(pump(), keepalive_upstream(), collect())
 

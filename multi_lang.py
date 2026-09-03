@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 import websockets
+import stt_bridge
 from fastapi import WebSocket, WebSocketDisconnect
 
 from telnyx_primitives import translate_sync, tts_sync
@@ -190,6 +191,7 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         try:
             while True:
                 pcm = await user_ws.receive_bytes()
+                _last_audio[0] = time.time()
                 if not _guard_started[0]:
                     _guard_started[0] = True
                     asyncio.create_task(_engine_guard())
@@ -244,7 +246,7 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         # 2.8s تلتقط جملة المحركين + أغلب الصدى المتأخر، والترجمة تصلك فور التتويج
         # قياس 14:20: nova-3 fr يرسل نتيجته أبطأ من صدى Cohere ar بثوانٍ
         # 2.8s فازت بالهلوسة قبل وصول الجملة الفرنسية الصحيحة → 4.5s
-        await asyncio.sleep(4.5)
+        await asyncio.sleep(0.6)
         if gid not in PENDING:
             return
         _, items = PENDING.pop(gid)
@@ -407,8 +409,28 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
                     upstreams[lang] = new_up
                     await collector(lang, new_up)
                 return
+    _last_audio = [time.time()]   # يحدّثه pump مع كل chunk صوتي
+
+    async def _release_pulse():
+        """🎯 كاشف السرعة (نفس live المثبت): is_final لا يصل إلا مع صوت/صمت
+        جديد بعده — نبض صامت كل 350ms عند خمول حقيقي يحرر النتائج فوراً."""
+        _n_pulse = 0
+        while not finished:
+            await asyncio.sleep(0.4)
+            if time.time() - _last_audio[0] > 0.25:
+                for _l, _u in list(upstreams.items()):
+                    try:
+                        # Cohere العربي يحتاج صمتاً أطول ليطلق النتيجة (1s)
+                        await _u.send(SILENCE_250MS * 4)
+                        _n_pulse += 1
+                        if _n_pulse == 1:
+                            print(f"[duo] 🫀 نبض التحرير يعمل (محرك {_l})", flush=True)
+                    except Exception as _pe:
+                        print(f"[duo] نبض فشل لمحرك {_l}: {type(_pe).__name__}", flush=True)
+
 
     collectors = [asyncio.create_task(collector(l, u)) for l, u in list(upstreams.items())]
+    asyncio.create_task(_release_pulse())
     try:
         await pump()
     finally:
@@ -508,6 +530,7 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
         try:
             while True:
                 pcm = await user_ws.receive_bytes()
+                _last_audio[0] = time.time()
                 if not _guard_started[0]:
                     _guard_started[0] = True
                     asyncio.create_task(_engine_guard())
