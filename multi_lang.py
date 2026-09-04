@@ -141,7 +141,11 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
             if not active:
                 continue
             for l in list(upstreams.keys()):
-                if l not in engine_got:
+                # 🔧 Claude #9: عضوية "not in" كان يعمى الحارس بعد أول استلام
+                # — محرك يتكلم مرة ثم يصمت ساعة لا يُشفى أبداً. فحص زمني:
+                last_got = engine_got.get(l, 0)
+                if now - last_got > 15 if last_got else True:
+                    # (لم يستلم شيئاً أبداً، أو صمت >15s أثناء بث نشط)
                     # 🎯 صبر عمر الاتصال (قياس 16:25 و16:39): لا قتل قبل 20s —
                     # nova-3-fr يرسل نتيجته ~9s بعد نهاية الكلام داخل uvicorn.
                     born = _up_born.get(l, now)
@@ -177,15 +181,19 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         return "".join(c.lower() for c in text if c.isalnum())[:40]
 
     def _is_orphan_tail(text: str, now: float) -> bool:
-        """🎯 قياس 12:27 (multi): ذيل nova اليتيم "today." وصل بعد 11.6s من جملته
-        الكاملة المُتوَّجة فبُث كجملة مستقلة. حجب أي متنافس ≤4 كلمات يُحتوى
-        (بعد التطبيع) في جملة مُوِّجت خلال آخر 12s — نفس منطق /ws/live المثبت."""
+        """🎯 قياس 12:27 + Claude #8 backport 12:36: ذيل nova اليتيم يُبث كجملة
+        مستقلة، واستمرار lowercase يسرق نافذة الجملة التالية. حجب: ≤4 كلمات
+        محتوى في جملة مُتوَّجة خلال 12s، أو يبدأ lowercase (استمرار ذيل)."""
         _norm = lambda s: " ".join(s.lower().split())
         tn = _norm(text)
         if len(tn.split()) > 4:
             return False
         for prev, t in _recent_crowned[-8:]:
-            if now - t <= 12 and (tn in prev or prev in tn):
+            if now - t > 12:
+                continue
+            if tn in prev or prev in tn:
+                return True
+            if text[:1].islower():
                 return True
         return False
 
@@ -358,6 +366,9 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
                 print(f"[duo] حجب صدى لاتيني: [{echo[0]}] '{echo[1][:20]}'", flush=True)
         best = max(valid, key=_fair)
         lang, text, conf = best
+        # 🔧 Claude #11: تفريغ القديم (تسريب بطيء عبر ساعات المؤتمر)
+        for k in [k for k, t in SENT_AT.items() if now - t > 60]:
+            SENT_AT.pop(k, None)
         SENT_AT[text_key(text)] = now
         _recent_crowned.append((" ".join(text.lower().split()), now))
         if len(_recent_crowned) > 8:
@@ -501,7 +512,11 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
             if now - last_chunk[0] >= 3.0:
                 continue
             for l in list(upstreams.keys()):
-                if l not in engine_got:
+                # 🔧 Claude #9: عضوية "not in" كان يعمى الحارس بعد أول استلام
+                # — محرك يتكلم مرة ثم يصمت ساعة لا يُشفى أبداً. فحص زمني:
+                last_got = engine_got.get(l, 0)
+                if now - last_got > 15 if last_got else True:
+                    # (لم يستلم شيئاً أبداً، أو صمت >15s أثناء بث نشط)
                     # 🎯 صبر عمر الاتصال (قياس 16:25 و16:39 — نفس duo): لا قتل
                     # قبل 20s من عمر الاتصال؛ nova-3-fr داخل uvicorn أرسل
                     # نتيجته ~9s بعد نهاية الكلام (بث 7s + endpointing → ~16s
@@ -619,10 +634,15 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
             asyncio.create_task(_crown(gid))
 
     async def _crown(gid: str):
-        # ننتظر امتلاء النافذة (5.8s من أول متنافس) + استقرار 1.2s —
-        # قياس 12:40: المرشح الصحيح المتأخر (en بعد 5.2s / fr بعد 5.7s) كان يفوت.
-        await asyncio.sleep(7.0)  # نافذة أوسع: نتيجة المحرك الصحيح قد تتأخر
-        # عن هلوسة محرك خاطئ (قياس: fr nova-3 وصل بثقة 0.999 لكن بعد هلوسة ar)
+        # 🔧 Claude #5 نافذة تكيفية: متنافس واحد = نتوّج سريعاً (2.5s)
+        # — كل جملة كانت تنتظر 7s مؤكدة في القاعة! عدة متنافسين فقط
+        # يستحقون 7s (جمع المرشح الصحيح المتأخر خلف هلوسة أسرع)
+        await asyncio.sleep(2.5)
+        if gid in PENDING and len(PENDING[gid][1]) == 1:
+            pass   # متنافس وحيد — نتوّج الآن بلا انتظار إضافي
+        else:
+            await asyncio.sleep(4.5)   # منافسة حقيقية: نكمل النافذة الكاملة
+        # (قياس 12:40: المرشح الصحيح المتأخر en 5.2s / fr 5.7s كان يفوت بالقصيرة)
         if gid not in PENDING:
             return
         _, items = PENDING.pop(gid)
@@ -724,6 +744,9 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
             return (trust + bonus, len(text))
         best = max(valid, key=_fair)
         lang, text, conf = best
+        # 🔧 Claude #11: تفريغ القديم (تسريب بطيء عبر ساعات المؤتمر)
+        for k in [k for k, t in SENT_AT.items() if now - t > 60]:
+            SENT_AT.pop(k, None)
         SENT_AT[text_key(text)] = now
         _recent_crowned.append((" ".join(text.lower().split()), now))
         if len(_recent_crowned) > 8:
