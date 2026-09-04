@@ -1,0 +1,12 @@
+# ملفات البيئة والصوت — لا تُنشر أبداً
+.env
+*.mp3
+*.wav
+*.pcm
+static/tts_audio/
+backups/
+__pycache__/
+*.pyc
+.venv/
+*.log
+/tmp/
