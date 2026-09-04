@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -158,8 +158,29 @@ WS_ENGINE_CONFIG = {
 }
 
 
+def _telnyx_stt_sync(audio_bytes: bytes, ext: str, language: str, engine_alias: str) -> str:
+    """النسخة المتزامنة الكاملة — تُنفذ داخل خيط مستقل (Claude #6). حلقة الخيط
+    تبقى حية عبر stt_bridge._loop (لا حلقة جديدة تُدمّر مهام keepalive عالقة
+    — قياس 11:1x: كانت تقتل الطلب 502 أحياناً وتلوث النتيجة بمعطيات معلقة)."""
+    import asyncio as _aio
+    import stt_bridge as _sb
+    _sb.ensure_bridge()
+    if not _sb._wait_loop():
+        raise RuntimeError("bridge loop dead")
+
+    fut = _aio.run_coroutine_threadsafe(
+        _telnyx_stt_inner(audio_bytes, ext, language, engine_alias), _sb._loop)
+    return fut.result(timeout=300)
+
+
 async def _telnyx_stt_inline(audio_bytes: bytes, ext: str, language: str, engine_alias: str) -> str:
-    """STT مباشرة داخل العملية: تحويل ffmpeg ثم WebSocket — أسرع من subprocess بفارق ثوانٍ."""
+    """STT عبر خيط مستقل — Claude #6: الاستقبال المباشر داخل event loop يعلق
+    (نفس علة +8.3s). منطق الجمل المتتالية والمهل الديناميكية كما هو داخل _inner."""
+    return await asyncio.to_thread(_telnyx_stt_sync, audio_bytes, ext, language, engine_alias)
+
+
+async def _telnyx_stt_inner(audio_bytes: bytes, ext: str, language: str, engine_alias: str) -> str:
+    """المنطق الأصلي (يُستدعى من خيط مستقل بحلقة خاصة)."""
     import websockets as _ws
 
     # 1) تحويل الصوت إلى mp3 16k mono (الصيغة الموثوقة) — فقط إن لم يكن mp3 جاهزاً
@@ -185,6 +206,7 @@ async def _telnyx_stt_inline(audio_bytes: bytes, ext: str, language: str, engine
             f"wss://api.telnyx.com/v2/speech-to-text/transcription"
             f"?transcription_engine={engine}&input_format=mp3{params}"
         )
+        print(f"[stt#6] ws_url: {ws_url}", flush=True)
         headers = {"Authorization": f"Bearer {TELNYX_KEY}"}
         pieces: list[str] = []
 
@@ -244,16 +266,24 @@ async def _telnyx_stt_inline(audio_bytes: bytes, ext: str, language: str, engine
                     pass
 
 
+_r_query = {}   # query params الحية (تُملأ في endpoint)
+
 @app.post("/api/stt")
-async def stt(
-    audio: UploadFile = File(...),
-    lang: str = Form("ar"),
-):
+async def stt(request: Request, audio: UploadFile = File(...), lang: str = Form("ar")):
+    """يستقبل مقطع صوتي ويعيد النص — lang من query أو form (قراءة يدوية)."""
+    global _r_query
+    _r_query = request.query_params
     """يستقبل مقطع صوتي ويعيد النص عبر Telnyx — داخل العملية (سريع)."""
     import time as _time
     _t0 = _time.time()
     if not TELNYX_KEY:
         raise HTTPException(500, "مفتاح Telnyx غير مضبوط على الخادم")
+    # 🎯 الحل الجذري: Query() لم يلتقط أبداً (3 قياسات) — نقرأ يدوياً من request
+    from fastapi import Request as _Req
+    _r = _r_query.get("lang")
+    print(f"[stt-ep] query_lang={_r!r} lang_form={lang!r}", flush=True)
+    if _r:
+        lang = _r
     engine = ENGINE_BY_TTS_LANG.get(lang, "nova3")
     ext = (Path(audio.filename or "a.webm").suffix or ".webm").lstrip(".").lower()
     content = await audio.read()
