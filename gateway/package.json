@@ -1,0 +1,8 @@
+{
+  "name": "nuba-gateway",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "elysia": "^1.4.0"
+  }
+}
