@@ -89,11 +89,13 @@ async def _tts_audio(text: str, lang: str):
             small = raw
         fname = f"t{_tmod.time_ns()}.mp3"
         (TTS_DIR / fname).write_bytes(small)
-        # تنظيف: آخر 40 ملفاً فقط
+        # 🔧 مراجعة Claude #4: prune بالعمر لا بالعدّ — العدّ كان يحذف ملفات
+        # جلسات أخرى نشطة قبل أن تنزلها (سبب مباشر لـ"TTS لا يُسمع")
         try:
-            olds = sorted(TTS_DIR.glob("t*.mp3"), key=lambda f: f.stat().st_mtime)
-            for f in olds[:-40]:
-                f.unlink(missing_ok=True)
+            cutoff = _tmod.time() - 600   # نحتفظ 10 دقائق
+            for f in TTS_DIR.glob("t*.mp3"):
+                if f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
         except Exception:
             pass
         return f"/tts_audio/{fname}"
@@ -232,19 +234,19 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
 
     bridge_id = f"live_{id(user_ws)}"
 
-    def connect_and_drain():
+    async def connect_and_drain():
         """يفتح محرك عبر الجسر المستقل (خيط منفصل — حل علة بطء uvicorn المزمن:
         القياس 2026-09-03: نفس الصوت +0.3s خارج uvicorn مقابل +8.3s داخله!).
         ثم يصرف pending عبر الجسر."""
         url = _engine_url(src_lang)
-        r = stt_bridge.open_stream(bridge_id, url)
+        r = await stt_bridge.open_stream(bridge_id, url)
         if r != "OK":
             print(f"[live] فشل فتح الجسر: {r}", flush=True)
             return False
         drained = 0
         while not pending.empty():
             try:
-                if stt_bridge.send_audio(bridge_id, pending.get_nowait()):
+                if await stt_bridge.send_audio(bridge_id, pending.get_nowait()):
                     drained += 1
                 else:
                     break
@@ -272,10 +274,10 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                     print(f"[live] AGC: chunk#{n_recv} gain={agc_state[0]:.1f}x", flush=True)
                 await pending.put(pcm)
                 while not pending.empty():
-                    if not stt_bridge.send_audio(bridge_id, pending.get_nowait()):
+                    if not await stt_bridge.send_audio(bridge_id, pending.get_nowait()):
                         # فشل إرسال: أعد فتح الجسر وصرف المتبقي
                         stt_bridge.close_stream(bridge_id)
-                        connect_and_drain()
+                        await connect_and_drain()
             except (WebSocketDisconnect, Exception) as e:
                 print(f"[live] pump انتهى: {type(e).__name__}: {str(e)[:80]}", flush=True)
                 return
@@ -288,7 +290,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
         while True:
             await asyncio.sleep(0.35)
             if time.time() - activity[0] > 0.25:
-                stt_bridge.send_audio(bridge_id, SILENCE_250MS)
+                await stt_bridge.send_audio(bridge_id, SILENCE_250MS)
 
     async def collect():
         """🚀 الاستقبال عبر جسر الخيط المستقل (stt_bridge):
@@ -297,7 +299,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
         الجسر يدير websocket المحرك في حلقة مستقلة ونستقبل بالpoll السريع."""
         nonlocal _fragments, _frag_last, _frag_tasks, _recent_sent, _tr_inflight
         reconnect_backoff = 0
-        if not connect_and_drain():
+        if not await connect_and_drain():
             return
         while True:
             try:
@@ -313,7 +315,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                             stt_bridge.close_stream(bridge_id)
                             reconnect_backoff = min(reconnect_backoff + 1, 4)
                             await asyncio.sleep(0.5 * reconnect_backoff)
-                            connect_and_drain()
+                            await connect_and_drain()
                         continue
                     if not (d.get("is_final") and d.get("transcript")):
                         continue
@@ -364,7 +366,18 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                 await asyncio.sleep(0.3)
     # (الفتح يتم الآن داخل collect عبر الجسر فوراً عند بدء الجلسة)
 
-    await asyncio.gather(pump(), keepalive_upstream(), collect())
+    # 🔧 مراجعة Claude #2 CRITICAL: gather الأبدي كان يسرّب كل جلسة
+    # (collect/keepalive حلقات لا نهائية لا تُلغى أبدا + close_stream لا يُستدعى)
+    tasks = [asyncio.create_task(pump()),
+             asyncio.create_task(keepalive_upstream()),
+             asyncio.create_task(collect())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        stt_bridge.close_stream(bridge_id)
 
 
 async def live_endpoint(websocket: WebSocket, lang: str = "en", tts_lang: str = "ar", tts: str = "0"):

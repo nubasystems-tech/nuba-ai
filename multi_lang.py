@@ -255,7 +255,7 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         now = time.time()
         key0 = text_key(items[0][1])[:25]
         for k, t in SENT_AT.items():
-            if now - t < 5 and k[:25] == key0:
+            if now - t < 12 and k[:25] == key0:
                 return
         # 🛡️ فلتر لغوي صارم للتبادل: جملة إنجليزية لا تصدر عبر محرك العربية والعكس
         # (قياس اليوم: Cohere التقط جملة إنجليزية بثقة أعلى → انعكس الاتجاه خطأً)
@@ -345,6 +345,14 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
             # ولأي لغة — وعندئذ يحسم bonus مطابقة اللغة (نص عبر محرك لغته).
             trust = 0.85 if conf == 0.0 else min(conf, 0.99)
             return (trust + bonus, len(text))
+        # 🛡️ (سجل 06:07): «Suppose» — صدى صوت عربي سمعه محرك en ككلمة لاتينية
+        # واحدة وترجمها «شكراً لك» = الهلوسة المرئية. متنافس لاتيني كلمة-واحدة
+        # مع متنافس عربي بنفس النافذة = صدى مؤكد → حجب ويتوج العربي
+        if len(valid) >= 2 and any(l == "ar" for l, t, c in valid):
+            for echo in [(l, t, c) for l, t, c in valid
+                         if l != "ar" and len(t.split()) <= 1 and t.isascii()]:
+                valid.remove(echo)
+                print(f"[duo] حجب صدى لاتيني: [{echo[0]}] '{echo[1][:20]}'", flush=True)
         best = max(valid, key=_fair)
         lang, text, conf = best
         SENT_AT[text_key(text)] = now
@@ -409,7 +417,9 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
                 new_up = await _open_upstream(lang)
                 if new_up:
                     upstreams[lang] = new_up
-                    await collector(lang, new_up)
+                    # 🔧 مراجعة Claude #7: الاستدعاء الذاتي يبني stack لا يُفك
+                    # (RecursionError بعد عدة انقطاعات) — مهمة جديدة بدلاً منه
+                    asyncio.create_task(collector(lang, new_up))
                 return
     _last_audio = [time.time()]   # يحدّثه pump مع كل chunk صوتي
 
@@ -417,12 +427,16 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         """🎯 كاشف السرعة (نفس live المثبت): is_final لا يصل إلا مع صوت/صمت
         جديد بعده — نبض صامت كل 350ms عند خمول حقيقي يحرر النتائج فوراً."""
         _n_pulse = 0
+        _last_pulse_t = 0.0
         while not finished:
             await asyncio.sleep(0.4)
-            if time.time() - _last_audio[0] > 0.25:
+            idle = time.time() - _last_audio[0]
+            # 🎯 (سجل 06:07): النبض المتكرر الأبدي جعل المحرك يعيد is_final
+            # نفس الجملة كل نبضة = هلوسة تكرار! سلسلة قصيرة: نبضات فقط 3 ثوانٍ
+            # بعد آخر كلام (تحرر النتيجة مرة) ثم صمت تام حتى كلام جديد
+            if 0.25 < idle < 3.0:
                 for _l, _u in list(upstreams.items()):
                     try:
-                        # Cohere العربي يحتاج صمتاً أطول ليطلق النتيجة (1s)
                         await _u.send(SILENCE_250MS * 4)
                         _n_pulse += 1
                         if _n_pulse == 1:
@@ -611,7 +625,7 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
         now = time.time()
         key0 = text_key(items[0][1])[:25]
         for k, t in SENT_AT.items():
-            if now - t < 5 and k[:25] == key0:
+            if now - t < 12 and k[:25] == key0:
                 return
         # 🛡️ الفلتر اللغوي الصارم (نفس duo — قياس دورة المؤتمر 2026-09-03):
         # صوت 10% + ضجيج + سرعة 1.35x: كل الجمل صدرت عبر محرك ar!
@@ -844,11 +858,13 @@ async def _tts_audio(text: str, lang: str):
             small = raw
         fname = f"t{_tmod.time_ns()}.mp3"
         (TTS_DIR / fname).write_bytes(small)
-        # تنظيف: احتفظ بآخر 40 ملفاً فقط (القرص الصغير)
+        # 🔧 مراجعة Claude #4: prune بالعمر لا بالعدّ — العدّ كان يحذف ملفات جلسات
+        # نشطة قبل تنزيلها (سبب مباشر لـ"TTS لا يُسمع")
         try:
-            olds = sorted(TTS_DIR.glob("t*.mp3"), key=lambda f: f.stat().st_mtime)
-            for f in olds[:-40]:
-                f.unlink(missing_ok=True)
+            cutoff = _tmod.time() - 600   # نحتفظ 10 دقائق
+            for f in TTS_DIR.glob("t*.mp3"):
+                if f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
         except Exception:
             pass
         return f"/tts_audio/{fname}"

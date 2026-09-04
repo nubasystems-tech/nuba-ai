@@ -46,14 +46,14 @@ def ensure_bridge():
             _thread.start()
 
 
-def open_stream(bridge_id: str, url: str):
-    """فتح اتصال محرك داخل الحلقة المستقلة. يعيد فوراً — الأجزاء عبر poll_results."""
+async def open_stream(bridge_id: str, url: str):
+    """فتح اتصال محرك — async (مراجعة Claude #1: لا حجب داخل event loop)."""
     ensure_bridge()
     if not _wait_loop():
         return "ERROR:bridge loop failed to start"
     fut = asyncio.run_coroutine_threadsafe(_open_and_pump(bridge_id, url), _loop)
     try:
-        return fut.result(timeout=25)
+        return await asyncio.wrap_future(fut)
     except Exception as e:
         return f"ERROR:{type(e).__name__}:{str(e)[:60]}"
 
@@ -95,14 +95,16 @@ async def _open_and_pump(bridge_id: str, url: str):
     return "OK"
 
 
-def send_audio(bridge_id: str, pcm: bytes) -> bool:
-    """إرسال صوت إلى upstream (من أي خيط — thread-safe)."""
+async def send_audio(bridge_id: str, pcm: bytes) -> bool:
+    """إرسال صوت إلى upstream — async حقيقي (مراجعة Claude #1 CRITICAL:
+    النسخة القديمة استدعت .result() المحجوب داخل event loop — يجمّد كل
+    الجلسات المتزامنة عند أي بطء إرسال واحد!)."""
     ws = globals().get("_sockets", {}).get(bridge_id)
     if ws is None:
         return False
     fut = asyncio.run_coroutine_threadsafe(ws.send(pcm), _loop)
     try:
-        fut.result(timeout=5)
+        await asyncio.wrap_future(fut)
         return True
     except Exception:
         return False
