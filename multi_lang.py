@@ -25,7 +25,8 @@ sys.path.insert(0, "/home/ubuntu/translator-app")
 import os
 TELNYX_KEY = os.environ.get("TELNYX_STT_API_KEY", "")
 
-SILENCE_250MS = b"\x00\x00" * 2000  # 250ms صمت 16k mono
+SILENCE_1S = b"\x00\x00" * 8000    # 🔧 Claude #13: 1 ثانية صمت حقيقية 16k mono
+SILENCE_250MS = b"\x00\x00" * 2000  # 125ms (تاريخياً — لا يعتمد عليه نبض duo)
 
 # محرك لكل لغة مرشحة (القاعة): عربي/إنجليزي/فرنسي/صيني/تركي
 FAN_LANGS = ["ar", "en", "fr", "zh-CN", "tr"]
@@ -92,6 +93,8 @@ async def _open_upstream(lang: str, retries: int = 3, force_engine: str = None):
 
 
 async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: bool = True):
+    metrics.inc("ws_sessions_total")
+    metrics.inc("ws_active")
     # 🛡️ حارس المجموعة الفارغة (سجل 2026-09-03 17:0x: هاتف المستخدم أرسل ar↔ar
     # خمس مرات = محركان عربيان مكرران = صفر ترجمة فعلية!): لو اللغتان متطابقتان
     # نستبدل الثانية بالإنجليزية تلقائياً (المستخدم عربي — التبادل المنطقي)
@@ -364,7 +367,10 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         await user_ws.send_json({"type": "source", "text": text, "speaker_lang": lang,
                                  "target_lang": target})
         try:
-            translated = await asyncio.to_thread(translate_sync, text, target)
+            try:
+                translated = await asyncio.wait_for(asyncio.to_thread(translate_sync, text, target), timeout=8)
+            except asyncio.TimeoutError:
+                translated = None
         except Exception:
             translated = None
         if translated:
@@ -437,7 +443,7 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
             if 0.25 < idle < 3.0:
                 for _l, _u in list(upstreams.items()):
                     try:
-                        await _u.send(SILENCE_250MS * 4)
+                        await _u.send(SILENCE_1S)
                         _n_pulse += 1
                         if _n_pulse == 1:
                             print(f"[duo] 🫀 نبض التحرير يعمل (محرك {_l})", flush=True)
@@ -451,6 +457,7 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         await pump()
     finally:
         finished = True
+        metrics.dec("ws_active")
         for c_task in collectors:
             c_task.cancel()
         for up in upstreams.values():
@@ -821,6 +828,7 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
         await pump()
     finally:
         finished = True
+        metrics.dec("ws_active")
         for c_task in collectors:
             c_task.cancel()
         for up in upstreams.values():

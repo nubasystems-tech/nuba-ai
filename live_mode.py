@@ -72,7 +72,11 @@ async def _tts_audio(text: str, lang: str):
     try:
         import subprocess as _sp
         import time as _tmod
-        p = await asyncio.to_thread(tts_sync, text, lang)
+        try:
+            p = await asyncio.wait_for(asyncio.to_thread(tts_sync, text, lang), timeout=10)
+        except asyncio.TimeoutError:
+            print("[live] TTS تجاوز 10s — نتجاهله", flush=True)
+            return None
         raw = p.read_bytes()
         suffix = p.suffix
         p.unlink(missing_ok=True)
@@ -165,6 +169,8 @@ def _agc_amplify(pcm: bytes, state: list) -> bytes:
 
 async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: str, tts_enabled: bool = False):
     upstream = None
+    metrics.inc("ws_sessions_total")   # Claude #12: العدادات كانت بلا توصيل
+    metrics.inc("ws_active")
     agc_state = [18.0, True, 0]  # يبدأ مرتفعاً (25x كثير جداً لصوت قريب): أول جملة تُفهم فوراً — يهبط تلقائياً لو الصوت قريب
     _tts_backlog = []  # طابور الأصوات — متحدث سريع جداً: نحتفظ بأحدث جملتين فقط
     # 🎯 آلية الجمل الكاملة: شظايا الفكرة الواحدة + لحظة آخر شظية + مؤقتات الإغلاق
@@ -204,7 +210,11 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                 return  # أطلقناها — النص الأصلي موجود على أي حال
             _tr_inflight += 1
             try:
-                translated = await asyncio.to_thread(translate_sync, txt, tts_lang)
+                # Claude #10: مهلة 8s — الترجمة المتجمدة كانت تقتل الجلسة كلها
+                try:
+                    translated = await asyncio.wait_for(asyncio.to_thread(translate_sync, txt, tts_lang), timeout=8)
+                except asyncio.TimeoutError:
+                    translated = None
             except Exception:
                 translated = None
             finally:
@@ -314,6 +324,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                             # المحرك سقط — إعادة فتح شفافة
                             stt_bridge.close_stream(bridge_id)
                             reconnect_backoff = min(reconnect_backoff + 1, 4)
+                            metrics.inc("reconnects_total")
                             await asyncio.sleep(0.5 * reconnect_backoff)
                             await connect_and_drain()
                         continue
@@ -362,7 +373,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                # خطأ غير متوقع — دورة أمان قصيرة
+                metrics.inc("errors_total")
                 await asyncio.sleep(0.3)
     # (الفتح يتم الآن داخل collect عبر الجسر فوراً عند بدء الجلسة)
 
@@ -378,6 +389,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         stt_bridge.close_stream(bridge_id)
+        metrics.dec("ws_active")   # الجلسة أغلقت نظيفة
 
 
 async def live_endpoint(websocket: WebSocket, lang: str = "en", tts_lang: str = "ar", tts: str = "0"):
