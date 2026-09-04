@@ -390,7 +390,9 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
                         continue
                     conf = float(d.get("confidence", 0) or 0)
                     alnum_count = sum(1 for c in text if c.isalnum())
-                    if conf < 0.65 and alnum_count < 4:
+                    # 🎯 (سجل المستخدم 23:06): «Hi.» حُجبت كترحيب حقيقي!
+                    # نسمح: كلمة+ واضحة الحروف. نحجب: الضجيج الرمزي القصير
+                    if conf < 0.65 and alnum_count < 2:
                         continue
                     now = time.time()
                     await _deliver(lang, text, conf, now)
@@ -773,7 +775,9 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
                     conf = float(d.get("confidence", 0) or 0)
                     print(f"[multi] [{lang}] خام conf={conf:.2f}: {text[:44]}", flush=True)
                     alnum_count = sum(1 for c in text if c.isalnum())
-                    if conf < 0.65 and alnum_count < 4:
+                    # 🎯 (سجل المستخدم 23:06): «Hi.» حُجبت كترحيب حقيقي!
+                    # نسمح: كلمة+ واضحة الحروف. نحجب: الضجيج الرمزي القصير
+                    if conf < 0.65 and alnum_count < 2:
                         continue  # ضجيج التُقط كنص (قياس: «。」 من محرك zh على ضجيج قاعة)
                     # 🏆 آلية "الفائز الأفضل": محركات متعددة قد تلتقط نفس الجملة بلغاتها —
                     # نجمع المتنافسين 600ms ونرسل الأقوى فقط (أعلى ثقة ثم أطول نص)

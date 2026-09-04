@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nuba AI v12</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Tajawal:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0e16;--panel:#111522;--surface:rgba(255,255,255,.03);--surface2:rgba(255,255,255,.05);
+  --border:rgba(240,201,72,.15);--border-subtle:rgba(240,201,72,.08);
+  --txt:#f5f1e6;--txt2:#d9d2bd;--txt3:#9d957f;--txt4:#6e6754;
+  --gold:#d4a017;--gold2:#f0c948;         /* 🥇 الذهب */
+  --sand:#c2a06b;--sand2:#e8d5a8;         /* 🏜️ الرمال */
+  --palm:#2e7d4f;--palm2:#43a06b;         /* 🌴 النخيل */
+  --nile:#1c6ba0;--nile2:#3a9ad9;         /* 🌊 النهر */
+  --accent:#c9a227;--accent2:#e8c84a;
+  --green:#27a644;--red:#e5484d;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  font-family:'Tajawal','Inter',system-ui,sans-serif;
+  background:var(--bg);color:var(--txt);
+  overflow-x:hidden;
+  font-feature-settings:"cv01","ss03";
+}
+/* ═══════ خلفية 3D ═══════ */
+#bg3d{position:fixed;inset:0;z-index:0;opacity:.92}
+#bg3d canvas{width:100%!important;height:100%!important;display:block}
+.vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 30%,transparent 0%,rgba(8,9,10,.55) 62%,var(--bg) 100%)}
+/* ═══════ التخطيط ═══════ */
+.wrap{position:relative;z-index:2;min-height:100%;display:flex;flex-direction:column}
+header{padding:22px 28px;display:flex;align-items:center;justify-content:space-between;
+  background:rgba(8,9,10,.72);backdrop-filter:blur(18px);
+  border-bottom:1px solid var(--border-subtle);position:sticky;top:0}
+.brand{display:flex;align-items:center;gap:12px}
+.brand .logo{width:38px;height:38px;border-radius:10px;
+  background:linear-gradient(135deg,var(--gold) 0%,#8a6d1d 100%);
+  display:grid;place-items:center;font-weight:700;font-size:20px;color:#0a0f1e;
+  box-shadow:0 0 24px rgba(201,162,39,.35),inset 0 1px 0 rgba(255,255,255,.35);
+  animation:logoPulse 3.2s ease-in-out infinite}
+@keyframes logoPulse{0%,100%{box-shadow:0 0 18px rgba(201,162,39,.3),inset 0 1px 0 rgba(255,255,255,.3)}
+  50%{box-shadow:0 0 34px rgba(201,162,39,.55),inset 0 1px 0 rgba(255,255,255,.4)}}
+.brand h1{font-size:17px;font-weight:600;letter-spacing:-.3px}
+.brand .sub{font-size:11px;color:var(--txt3);margin-top:1px;letter-spacing:.4px}
+.live-badge{display:none;align-items:center;gap:7px;font-size:12px;color:var(--txt2);
+  background:var(--surface);border:1px solid var(--border);padding:5px 13px;border-radius:99px}
+.live-badge.on{display:flex}
+.live-badge .dot{width:8px;height:8px;border-radius:50%;background:var(--red);
+  animation:blink 1.15s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+/* ═══════ البطل Hero ═══════ */
+.hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:36px 22px 100px;text-align:center;position:relative}
+.hero h2{font-size:clamp(28px,6vw,54px);font-weight:600;letter-spacing:-1.4px;line-height:1.12;
+  background:linear-gradient(180deg,#fff 12%,#c9d2e8 88%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:rise .9s cubic-bezier(.2,.9,.3,1) both}
+.hero p{margin-top:14px;font-size:clamp(13px,2.4vw,16px);color:var(--txt3);max-width:540px;line-height:1.75;
+  animation:rise .9s .12s cubic-bezier(.2,.9,.3,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+/* زر الميكروفون */
+.mic-zone{margin-top:42px;animation:rise .9s .22s cubic-bezier(.2,.9,.3,1) both}
+.mic-btn{width:98px;height:98px;border-radius:50%;border:1px solid var(--border);
+  background:var(--surface2);color:var(--txt);font-size:38px;cursor:pointer;position:relative;
+  transition:transform .22s cubic-bezier(.3,1.4,.5,1),background .3s,box-shadow .3s;
+  display:grid;place-items:center}
+.mic-btn:hover{transform:scale(1.06);background:var(--surface2)}
+.mic-btn:active{transform:scale(.94)}
+.mic-btn.rec{background:linear-gradient(135deg,#e5484d,#b32b30);border-color:transparent;
+  box-shadow:0 0 46px rgba(229,72,77,.45);animation:recPulse 1.6s infinite}
+@keyframes recPulse{0%,100%{box-shadow:0 0 30px rgba(229,72,77,.4)}
+  50%{box-shadow:0 0 60px rgba(229,72,77,.65)}}
+.mic-hint{margin-top:16px;font-size:12.5px;color:var(--txt4);transition:color .3s}
+/* الحالة والشريط */
+.status{margin-top:18px;font-size:13px;color:var(--txt2);min-height:20px}
+.meter{width:min(320px,72vw);height:6px;border-radius:99px;background:rgba(255,255,255,.06);
+  margin:14px auto 0;overflow:hidden;border:1px solid var(--border-subtle)}
+.meter i{display:block;height:100%;width:0%;border-radius:99px;
+  background:linear-gradient(90deg,#27a644,#ffb03b 55%,#e5484d);
+  transition:width .18s linear}
+/* اختيارات اللغات */
+.controls{margin-top:34px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;
+  animation:rise .9s .3s cubic-bezier(.2,.9,.3,1) both}
+.ctrl{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:12px 16px;display:flex;flex-direction:column;gap:8px;min-width:150px}
+.ctrl label{font-size:10.5px;color:var(--txt4);letter-spacing:1.2px}
+.ctrl select{background:var(--panel);color:var(--txt);border:1px solid var(--border-subtle);
+  border-radius:8px;padding:9px 11px;font-size:13.5px;font-family:inherit;cursor:pointer;outline:none;
+  transition:border-color .2s}
+.ctrl select:focus{border-color:rgba(201,162,39,.5)}
+.tts-row{align-items:center;flex-direction:row;justify-content:space-between}
+.tts-row span{font-size:12.5px;color:var(--txt2)}
+.switch{position:relative;width:40px;height:22px;cursor:pointer}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:rgba(255,255,255,.08);border-radius:99px;
+  border:1px solid var(--border-subtle);transition:.25s}
+.slider:before{content:"";position:absolute;width:16px;height:16px;border-radius:50%;
+  background:var(--txt2);top:2px;right:2px;transition:.25s}
+.switch input:checked+.slider{background:rgba(201,162,39,.25)}
+.switch input:checked+.slider:before{transform:translateX(-18px);background:var(--gold)}
+/* ═══════ النص اللحظي ═══════ */
+.partial{margin:30px auto 0;max-width:620px;width:92%;
+  background:linear-gradient(180deg,rgba(201,162,39,.07),rgba(255,255,255,.02));
+  border:1px solid rgba(201,162,39,.22);border-radius:16px;padding:16px 20px;
+  font-size:15px;color:var(--txt2);min-height:56px;display:none;text-align:right;
+  animation:glowIn .5s ease}
+.partial.on{display:block}
+@keyframes glowIn{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+.partial .lbl{font-size:10px;color:var(--gold);letter-spacing:2px;margin-bottom:6px;opacity:.85}
+/* ═══════ السجل ═══════ */
+.feed{max-width:620px;width:92%;margin:26px auto 0;display:flex;flex-direction:column;gap:12px;
+  max-height:38vh;overflow-y:auto;padding:4px 2px}
+.feed::-webkit-scrollbar{width:4px}
+.feed::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:4px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:15px 18px;animation:cardIn .45s cubic-bezier(.2,.9,.3,1) both;
+  transition:border-color .3s}
+.card:hover{border-color:rgba(201,162,39,.28)}
+@keyframes cardIn{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+.card .src{font-size:15px;color:var(--txt);line-height:1.55}
+.card .tr{font-size:14.5px;color:var(--gold2);line-height:1.65;margin-top:8px;padding-top:8px;
+  border-top:1px solid var(--border-subtle)}
+.card .meta{display:flex;justify-content:space-between;margin-top:9px;
+  font-size:10.5px;color:var(--txt4)}
+/* ═══════ موجة صوتية متحركة ═══════ */
+.wave{display:none;gap:3px;align-items:center;justify-content:center;height:26px;margin-top:16px}
+.wave.on{display:flex}
+.wave b{width:3.5px;border-radius:2px;background:var(--gold);
+  animation:wv 1s infinite ease-in-out}
+@keyframes wv{0%,100%{height:5px;opacity:.4}50%{height:24px;opacity:1}}
+/* ═══════ أقسام الميزات ═══════ */
+.features{padding:70px 24px 40px;max-width:1000px;margin:0 auto}
+.features h3{font-size:clamp(20px,3.6vw,28px);font-weight:600;letter-spacing:-.7px;text-align:center;margin-bottom:40px}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.fcard{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;
+  transition:transform .3s cubic-bezier(.2,.9,.3,1),border-color .3s,background .3s}
+.fcard:hover{transform:translateY(-5px);border-color:rgba(201,162,39,.3);background:var(--surface2)}
+.fcard .ico{font-size:26px;margin-bottom:14px;display:block}
+.fcard h4{font-size:15.5px;font-weight:600;margin-bottom:8px;letter-spacing:-.2px}
+.fcard p{font-size:13px;color:var(--txt3);line-height:1.7}
+footer{padding:34px 24px;text-align:center;font-size:11.5px;color:var(--txt4);
+  border-top:1px solid var(--border-subtle)}
+footer b{color:var(--gold)}
+/* موبايل */
+@media(max-width:640px){
+  header{padding:16px 18px}
+  .brand .sub{display:none}
+  .ctrl{min-width:calc(50% - 8px)}
+  .hero{padding-top:22px}
+}
+</style>
+</head>
+<body>
+
+<div id="bg3d"></div>
+<div class="vignette"></div>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo">N</div>
+      <div>
+        <h1>Nuba AI</h1>
+        <div class="sub">REAL-TIME TRANSLATION ENGINE</div>
+      </div>
+    </div>
+    <div class="live-badge" id="liveBadge"><span class="dot"></span> بث حي</div>
+  </header>
+
+  <main class="hero">
+    <h2>N — المترجم الفوري<br>ترجمة لحظية بلا حدود</h2>
+    <p>ترجمة لحظية أثناء كلام المتحدث — الصوت الضعيف، الضجيج، والمتحدث السريع، كلها معالجة.</p>
+    <div class="mic-zone">
+      <button class="mic-btn" id="micBtn">🎙</button>
+      <div class="mic-hint" id="micHint">اضغط لبدء البث الحي</div>
+    </div>
+
+    <div class="wave" id="wave"></div>
+    <div class="status" id="status"></div>
+    <div class="meter"><i id="meterFill"></i></div>
+
+    <div class="controls">
+      <div class="ctrl">
+        <label>المتحدث</label>
+        <select id="srcLang">
+          <option value="duo" selected>🔁 حوار تبادلي تلقائي</option>
+          <option value="en">🇬🇧 إنجليزي</option>
+          <option value="ar">🇸🇦 عربي</option>
+          <option value="fr">🇫🇷 فرنسي</option>
+          <option value="zh-CN">🇨🇳 صيني</option>
+          <option value="tr">🇹🇷 تركي</option>
+          <option value="de">🇩🇪 ألماني</option>
+          <option value="es">🇪🇸 إسباني</option>
+          <option value="ru">🇷🇺 روسي</option>
+          <option value="ja">🇯🇵 ياباني</option>
+          <option value="ko">🇰🇷 كوري</option>
+        </select>
+      </div>
+      <div class="ctrl" id="secondLangRow">
+        <label>اللغة الثانية</label>
+        <select id="langB">
+          <option value="ar" selected>🇸🇦 عربي</option>
+          <option value="en">🇬🇧 English</option>
+        </select>
+      </div>
+      <div class="ctrl">
+        <label>أسمع</label>
+        <select id="myLang">
+          <option value="ar" selected>🇸🇦 عربي</option>
+          <option value="en">🇬🇧 English</option>
+          <option value="fr">🇫🇷 Français</option>
+          <option value="zh-CN">🇨🇳 中文</option>
+          <option value="tr">🇹🇷 Türkçe</option>
+        </select>
+      </div>
+      <div class="ctrl tts-row">
+        <span>🔊 نطق صوتي</span>
+        <label class="switch"><input type="checkbox" id="ttsToggle" checked><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="partial" id="partialBox"><div class="lbl">يُسمع الآن</div><span id="partialTxt"></span></div>
+
+    <div class="feed" id="feed"></div>
+  </main>
+
+  <section class="features">
+    <h3>محرّك N — بلا حدود</h3>
+    <div class="fgrid">
+      <div class="fcard"><span class="ico">⚡</span><h4>ترجمة لحظية</h4><p>النص يظهر فور نطقه — والترجمة تصله خلال أعشار الثانية. كل 7 كلمات دفعة متدفقة.</p></div>
+      <div class="fcard"><span class="ico">🔊</span><h4>معالج صوت النوبة</h4><p>معالج طيفي يرفع الهمس حتى 250 ضعفاً مع قمع ضجيج القاعة — أذن نوبية تسمع كل همسة.</p></div>
+      <div class="fcard"><span class="ico">🌐</span><h4>10+ لغات</h4><p>من العربية النوبية إلى لغات العالم — كشف لغة تلقائي مع محرك Deepgram nova-3.</p></div>
+      <div class="fcard"><span class="ico">🌊</span><h4>ثبات نهر النيل</h4><p>اتصال حي واحد يستمر لساعات — إعادة اتصال تلقائية كجريان النيل، بلا انقطاع.</p></div>
+    </div>
+  </section>
+
+  <footer>N — Nuba AI v11.1 · من بلاد النوبة، شمال السودان 🇸🇩</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js" onerror="window._no3d=true"></script>
+<script>
+"use strict";
+/* ═══════════ 3D: كرة أرضية ذهبية متحركة بشبكة نقاط ═══════════ */
+(function(){
+  if(window._no3d || typeof THREE==="undefined") return;  // أندرويد قديم؟ الترجمة أهم من الزينة
+  const el=document.getElementById("bg3d");
+  const scene=new THREE.Scene();
+  const cam=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,100);
+  cam.position.z=8.5;
+  let rend;
+  try{ rend=new THREE.WebGLRenderer({antialias:true,alpha:true}); }
+  catch(e){ el.style.display="none"; return; }
+  rend.setSize(innerWidth,innerHeight);
+  rend.setPixelRatio(Math.min(devicePixelRatio,2));
+  el.appendChild(rend.domElement);
+
+  // كرة نقاط ذهبية
+  const R=3.4, N=2600;
+  const pos=new Float32Array(N*3), seed=new Float32Array(N);
+  for(let i=0;i<N;i++){
+    // توزيع فيبوناتشي المتساوي على الكرة
+    const y=1-(i/(N-1))*2, r=Math.sqrt(1-y*y), th=i*2.39996;
+    const rr=R*(0.98+Math.random()*0.06);
+    pos[i*3]=Math.cos(th)*r*rr; pos[i*3+1]=y*rr; pos[i*3+2]=Math.sin(th)*r*rr;
+    seed[i]=Math.random();
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute("position",new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color:0xf0c948,size:.05,transparent:true,opacity:.9});
+  const globe=new THREE.Points(geo,mat);
+  scene.add(globe);
+
+  // هالة داخلية
+  const core=new THREE.Mesh(
+    new THREE.SphereGeometry(R*.96,48,48),
+    new THREE.MeshBasicMaterial({color:0x0d1428,transparent:true,opacity:.88})
+  );
+  scene.add(core);
+
+  // حلقات مدارية
+  const rings=[];
+  for(let k=0;k<3;k++){
+    const rg=new THREE.RingGeometry(R+.55+k*.42,R+.57+k*.42,120);
+    const rm=new THREE.MeshBasicMaterial({color:0x1c6ba0,transparent:true,
+      opacity:.22-k*.05,side:THREE.DoubleSide});
+    const ring=new THREE.Mesh(rg,rm);
+    ring.rotation.x=Math.PI/2.6+k*.5; ring.rotation.y=k*.7;
+    scene.add(ring); rings.push(ring);
+  }
+
+  // ⭐ نجوم ذهبية نوبية — تنساب كموجات النيل
+  const sN=500, sPos=new Float32Array(sN*3);
+  for(let i=0;i<sN;i++){
+    sPos[i*3]=(Math.random()-.5)*70; sPos[i*3+1]=(Math.random()-.5)*50; sPos[i*3+2]=-10-Math.random()*30;
+  }
+  const sg=new THREE.BufferGeometry();
+  sg.setAttribute("position",new THREE.BufferAttribute(sPos,3));
+  scene.add(new THREE.Points(sg,new THREE.PointsMaterial({color:0xf0c948,size:.06,transparent:true,opacity:.5})));
+
+  // 🌴 نخلة ذهبية: جذع + سعفات منحنية من نقاط ضوئية
+  const palmGroup=new THREE.Group();
+  const trunkPts=[];
+  for(let i=0;i<26;i++){
+    const t=i/25, y=t*2.2, sway=Math.sin(t*2.6)*.14;
+    trunkPts.push(new THREE.Vector3(sway,y,0));
+  }
+  const trunkGeo=new THREE.BufferGeometry().setFromPoints(trunkPts);
+  palmGroup.add(new THREE.Line(trunkGeo,new THREE.LineBasicMaterial({color:0xd4a017,transparent:true,opacity:.85})));
+  // سعفات النخيل — أقواس منحنية من أعلى الجذع
+  for(let f=0;f<9;f++){
+    const ang=f/9*Math.PI*2;
+    const frondPts=[];
+    for(let s=0;s<18;s++){
+      const u=s/17, len=.95, droop=u*u*.75;
+      frondPts.push(new THREE.Vector3(
+        Math.cos(ang)*u*len+Math.sin(2.6)*.05,
+        2.2-droop,
+        Math.sin(ang)*u*len
+      ));
+    }
+    const fGeo=new THREE.BufferGeometry().setFromPoints(frondPts);
+    palmGroup.add(new THREE.Line(fGeo,new THREE.LineBasicMaterial({color:0x2e7d4f,transparent:true,opacity:.75})));
+  }
+  palmGroup.position.set(4.6,-3.4,-3.5);
+  palmGroup.scale.setScalar(.85);
+  scene.add(palmGroup);
+
+  // 🏜️ كثبان الرمال: تلال ناعمة من نقاط رملية ذهبية تمتد خلف النهر
+  const duneN=380, dunePos=new Float32Array(duneN*3);
+  for(let i=0;i<duneN;i++){
+    const u=(i%duneN)/(duneN-1), row=Math.floor(i/(duneN/3));
+    const x=(u-.5)*30;
+    const hill=Math.sin(x*.55)*1.1+Math.cos(x*.23)*.7+row*.55;
+    dunePos[i*3]=x;
+    dunePos[i*3+1]=-5.2+hill*.45;
+    dunePos[i*3+2]=-9-row*2.2;
+  }
+  const duneGeo=new THREE.BufferGeometry();
+  duneGeo.setAttribute("position",new THREE.BufferAttribute(dunePos,3));
+  const dunes=new THREE.Points(duneGeo,new THREE.PointsMaterial({
+    color:0xc2a06b,size:.09,transparent:true,opacity:.55}));
+  scene.add(dunes);
+
+  // 🌊 نهر النيل: شريط متموج أزرق يتدفق أسفل المشهد
+  const riverPts=[], riverN=90;
+  for(let i=0;i<riverN;i++){
+    const u=i/(riverN-1);
+    riverPts.push(new THREE.Vector3((u-.5)*26,-4.6+Math.sin(u*9)*.12, -2+u*2.5));
+  }
+  const riverGeo=new THREE.BufferGeometry().setFromPoints(riverPts);
+  const river=new THREE.Line(riverGeo,new THREE.LineBasicMaterial({color:0x3a9ad9,transparent:true,opacity:.6}));
+  scene.add(river);
+  // انعكاس النهر (خط ثانٍ بموجة معاكسة)
+  const river2Pts=[];
+  for(let i=0;i<riverN;i++){
+    const u=i/(riverN-1);
+    river2Pts.push(new THREE.Vector3((u-.5)*26,-4.1+Math.cos(u*11)*.14,-1.7+u*2.5));
+  }
+  const river2=new THREE.Line(new THREE.BufferGeometry().setFromPoints(river2Pts),
+    new THREE.LineBasicMaterial({color:0x1c6ba0,transparent:true,opacity:.4}));
+  scene.add(river2);
+
+  let mx=0,my=0;
+  addEventListener("pointermove",e=>{
+    mx=(e.clientX/innerWidth-.5); my=(e.clientY/innerHeight-.5);
+  });
+  addEventListener("resize",()=>{
+    cam.aspect=innerWidth/innerHeight; cam.updateProjectionMatrix();
+    rend.setSize(innerWidth,innerHeight);
+  });
+  let t=0;
+  try{
+  (function loop(){
+    requestAnimationFrame(loop);
+    t+=.008;
+    globe.rotation.y+=.0016;
+    core.rotation.y+=.0016;
+    // تموج تنفسي للنقاط
+    const p=geo.attributes.position.array;
+    for(let i=0;i<N;i++){
+      const w=Math.sin(t*2+seed[i]*6.28)*.06;
+      p[i*3]*= 1+w*0.02; p[i*3+1]*=1+w*0.02; p[i*3+2]*=1+w*0.02;
+    }
+    geo.attributes.position.needsUpdate=true;
+    rings.forEach((r,i)=>{r.rotation.z+=.001+i*.0004;});
+    // 🌴 النخلة تتمايل مع نسيم النيل
+    palmGroup.rotation.z=Math.sin(t*1.3)*.045;
+    // 🏜️ الرمال: وميض حراري خفيف
+    dunes.material.opacity=.45+Math.sin(t*1.7)*.12;
+    // 🌊 النهر ينساب
+    river.position.x=Math.sin(t*.8)*.5;
+    river2.position.x=Math.cos(t*.65)*.7;
+    // تتبع الفأرة بنعومة
+    cam.position.x+=(mx*1.6-cam.position.x)*.03;
+    cam.position.y+=(-my*1.2-cam.position.y)*.03;
+    cam.lookAt(0,0,0);
+    rend.render(scene,cam);
+  })();
+  }catch(e){ el.style.display="none"; }
+})();
+</script>
+
+<script>
+"use strict";
+/* مراقبة أخطاء JS — أي خطأ يظهر على الشاشة بدل الصمت المطبق */
+window.onerror=function(msg,src,line){
+  const st=document.getElementById("status");
+  if(st) st.textContent="⚠️ خطأ: "+String(msg).slice(0,80);
+  return false;
+};
+/* ═══════════ محرك الترجمة الحي ═══════════ */
+const $=s=>document.querySelector(s);
+let ws=null,audioCtx=null,proc=null,gainNode=null,stream=null,running=false,lastSend=0,band=-1;
+
+function status(t){$("#status").textContent=t;}
+const FLAGS={ar:"🇸🇦",en:"🇬🇧","zh-CN":"🇨🇳",fr:"🇫🇷",tr:"🇹🇷",de:"🇩🇪",es:"🇪🇸",ru:"🇷🇺",ja:"🇯🇵",ko:"🇰🇷"};
+
+function addCard(src,tr,lang){
+  const d=document.createElement("div");
+  d.className="card";
+  d.innerHTML=`<div class="src"></div>${tr?'<div class="tr"></div>':''}
+    <div class="meta"><span>${(FLAGS[lang]||"🌐")} ${new Date().toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"})}</span><span>Nuba</span></div>`;
+  d.querySelector(".src").textContent=src;
+  if(tr)d.querySelector(".tr").textContent=tr;
+  $("#feed").prepend(d);
+  while($("#feed").children.length>60)$("#feed").lastChild.remove();
+}
+
+async function startLive(){
+  if(running)return;
+  const src=$("#srcLang").value, mine=$("#myLang").value;
+  const tts=$("#ttsToggle").checked?"1":"0";
+  const proto=location.protocol==="https:"?"wss":"ws";
+  status("جارٍ الاتصال…");
+  let url;
+  if(src==="duo"){
+    const langB=$("#langB").value;
+    // 🎯 إصلاح: المستخدم عربي — الطرف الأول عربي دائماً (en↔fr السابق كان يقصّ العربية!)
+    const a = "ar";
+    url=`${proto}://${location.host}/ws/duo?lang_a=${a}&lang_b=${langB}&tts=${tts}`;
+  } else {
+    url=`${proto}://${location.host}/ws/live?lang=${src}&tts_lang=${mine}&tts=${tts}`;
+  }
+  ws=new WebSocket(url);
+  ws.onopen=async()=>{
+    running=true;
+    $("#micBtn").classList.add("rec");
+    $("#micBtn").textContent="■";
+    $("#micHint").textContent="البث الحي يعمل — اضغط للإيقاف";
+    $("#liveBadge").classList.add("on");
+    $("#wave").classList.add("on");
+    status("🟢 الاتصال جاهز — تحدث الآن");
+    // Wake Lock — منع نوم أندرويد
+    try{ if("wakeLock" in navigator){
+      window._wl=await navigator.wakeLock.request("screen");
+      document.addEventListener("visibilitychange",async()=>{
+        if(document.visibilityState==="visible") window._wl=await navigator.wakeLock.request("screen");
+      });
+    }}catch(e){}
+    // 🔧 إصلاح أندرويد: 16k غير مدعوم على بعض الأجهزة → استثناء صامت يقتل البث كله
+    try{
+      audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+    }catch(e){
+      try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }
+      catch(e2){ status("❌ الصوت غير مدعوم بمتصفحك — جرّب Chrome"); return; }
+    }
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    }catch(err){
+      status("❌ الميكروفون مرفوض — اضغط 🔒 واسمح");
+      running=false; $("#micBtn").classList.remove("rec");
+      return;
+    }
+    gainNode=audioCtx.createGain(); gainNode.gain.value=3.0;
+    audioCtx.onstatechange=()=>{try{if(audioCtx&&audioCtx.state==="suspended")audioCtx.resume();}catch(e){}};
+    const srcNode=audioCtx.createMediaStreamSource(stream);
+    proc=audioCtx.createScriptProcessor(4096,1,1);
+    const analyser=audioCtx.createAnalyser();
+    gainNode.connect(analyser);
+    const buf=new Uint8Array(analyser.frequencyBinCount);
+    window._meterTimer=setInterval(()=>{
+      if(!running)return;
+      analyser.getByteTimeDomainData(buf);
+      let peak=0; for(const v of buf)peak=Math.max(peak,Math.abs(v-128));
+      const lvl=(peak/128)*100;
+      $("#meterFill").style.width=Math.min(100,lvl)+"%";
+      const b=lvl<4?0:lvl<10?1:2;
+      if(b!==band){ band=b;
+        if(b===0)status("🔇 لا يصلنا صوت");
+        else if(b===1)status("🟡 صوت خفيف — اقترب من السماعة");
+        else status("🟢 الصوت ممتاز — الترجمة تعمل");
+      }
+    },600);
+    srcNode.connect(gainNode);
+    gainNode.connect(proc);
+    proc.connect(audioCtx.destination);
+    proc.onaudioprocess=e=>{
+      if(!ws||ws.readyState!==1)return;
+      const pcm=e.inputBuffer.getChannelData(0);
+      const i16=new Int16Array(pcm.length);
+      for(let i=0;i<pcm.length;i++){
+        const s=Math.max(-1,Math.min(1,pcm[i]));
+        i16[i]=s<0?s*0x8000:s*0x7FFF;
+      }
+      ws.send(i16.buffer);
+      lastSend=Date.now();
+    };
+    window._kaTimer=setInterval(()=>{
+      if(ws&&ws.readyState===1&&Date.now()-lastSend>8000){
+        ws.send(new Int16Array(1600).buffer); lastSend=Date.now();
+      }
+    },9000);
+  };
+  ws.onmessage=ev=>{
+    let m; try{m=JSON.parse(ev.data);}catch{return;}
+    if(m.type==="ready"){status("🟢 الاتصال جاهز — تحدث الآن");}
+    else if(m.type==="source_partial"){
+      $("#partialBox").classList.add("on");
+      $("#partialTxt").textContent=m.text;
+    }
+    else if(m.type==="source"){
+      const dir = m.target_lang ? `${(FLAGS[m.speaker_lang]||"🌐")}→${(FLAGS[m.target_lang]||"🌐")} ` : "";
+      addCard(dir+m.text,null,m.speaker_lang);
+    }
+    else if(m.type==="translation"){
+      const first=$("#feed").querySelector(".card:not(.done)");
+      if(first){
+        const tr=document.createElement("div");
+        tr.className="tr"; tr.textContent=m.text;
+        first.appendChild(tr); first.classList.add("done");
+      }
+    }
+    else if(m.type==="tts"){
+      const a=new Audio(m.url); a.volume=.95; a.play().catch(()=>{});
+    }
+  };
+  ws.onerror=()=>{if(!running)status("⚠️ فشل الاتصال — أعد المحاولة");};
+  ws.onclose=()=>{
+    if(running){status("⚠️ انقطع الاتصال — أعد الضغط للمحاولة");stopAll();}
+  };
+}
+
+function stopAll(){
+  running=false;
+  // 🛡️ إصلاح Uncaught TypeError: null.state (لقطة شاشة طارق!):
+  // المؤقتات وonstatechange كانوا يقرأون audioCtx بعد صفرته
+  if(window._meterTimer){clearInterval(window._meterTimer);window._meterTimer=null;}
+  if(window._kaTimer){clearInterval(window._kaTimer);window._kaTimer=null;}
+  if(audioCtx){try{audioCtx.onstatechange=null;}catch(e){}}
+  if(ws){try{ws.close();}catch(e){}ws=null;}
+  if(proc){try{proc.disconnect();}catch(e){}proc=null;}
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  if(audioCtx){try{audioCtx.close();}catch(e){}audioCtx=null;}
+  $("#micBtn").classList.remove("rec");
+  $("#micBtn").textContent="🎙";
+  $("#micHint").textContent="اضغط لبدء البث الحي";
+  $("#liveBadge").classList.remove("on");
+  $("#wave").classList.remove("on");
+  $("#meterFill").style.width="0%";
+}
+
+// موجة صوتية زخرفية (تتزامن مع المؤشر)
+(function(){
+  const w=$("#wave");
+  for(let i=0;i<5;i++){
+    const b=document.createElement("b");
+    b.style.animationDelay=(i*.12)+"s";
+    w.appendChild(b);
+  }
+})();
+
+$("#micBtn").onclick=()=>{
+  try{
+    running ? stopAll() : startLive();
+  }catch(e){
+    status("⚠️ خطأ بدء: "+e.message);
+  }
+};
+</script>
+</body>
+</html>
