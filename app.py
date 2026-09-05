@@ -329,6 +329,21 @@ async def ws_multi(ws: _WS, tts_lang: str = "ar"):
     await multi_lang_endpoint(ws, tts_lang)
 
 
+# ---- عامل اللابتوب الدائم (Laptop Worker Queue) ----
+from agent_tasks import router as agent_router
+from fastapi.responses import PlainTextResponse
+
+@app.get("/agent/agent_worker.py", response_class=PlainTextResponse)
+async def serve_worker_py():
+    return PlainTextResponse(open("/home/ubuntu/translator-app/agent_worker.py", encoding="utf-8").read())
+
+@app.get("/agent/install_worker.ps1", response_class=PlainTextResponse)
+async def serve_install_ps1():
+    return PlainTextResponse(open("/home/ubuntu/translator-app/install_worker.ps1", encoding="utf-8").read(), media_type="text/plain; charset=utf-8")
+
+from agent_tasks import router as agent_router
+app.include_router(agent_router)
+
 # ---- جسر المكالمات والواتساب (Call & WhatsApp Translation Bridge) ----
 from voice_bridge import router as voice_router
 app.add_middleware(SecurityHeadersMiddleware)
