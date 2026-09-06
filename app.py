@@ -344,6 +344,16 @@ async def serve_install_ps1():
 from agent_tasks import router as agent_router
 app.include_router(agent_router)
 
+# ---- Nuba v23 — النسخة النظيفة (كامل المنطق في nuba_v23.py) ----
+import nuba_v23
+import os as _os
+from fastapi import WebSocket as _WS23
+
+@app.websocket("/ws/v23")
+async def ws_v23(ws: _WS23, tts: str = "0"):
+    nuba_v23.KEY = _os.environ.get("TELNYX_STT_API_KEY", "")
+    await nuba_v23.translator_worker(ws, tts_on=(tts == "1"))
+
 # ---- جسر المكالمات والواتساب (Call & WhatsApp Translation Bridge) ----
 from voice_bridge import router as voice_router
 app.add_middleware(SecurityHeadersMiddleware)

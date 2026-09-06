@@ -69,7 +69,7 @@ async function startAll(){
   const gain=audioCtx.createGain();gain.gain.value=3.0;
   proc=audioCtx.createScriptProcessor(4096,1,1);
   const proto=location.protocol==="https:"?"wss":"ws";
-  ws=new WebSocket(`${proto}://${location.host}/ws/duo?lang_a=ar&lang_b=en&tts=${tts}`);
+  ws=new WebSocket(`${proto}://${location.host}/ws/v23&tts=${tts}`);
   ws.onopen=()=>{running=true;micBtn.classList.add("rec");micBtn.textContent="■";status("🟢 يستمع الآن — تحدث بحرية (عربي أو English)");};
   ws.onmessage=ev=>{try{const m=JSON.parse(ev.data);
     if(m.type==="source"){addHeard(m.text,false);}
