@@ -265,7 +265,9 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         # 2.8s تلتقط جملة المحركين + أغلب الصدى المتأخر، والترجمة تصلك فور التتويج
         # قياس 14:20: nova-3 fr يرسل نتيجته أبطأ من صدى Cohere ar بثوانٍ
         # 2.8s فازت بالهلوسة قبل وصول الجملة الفرنسية الصحيحة → 4.5s
-        await asyncio.sleep(0.6)
+        # ⚡ تتويج تكيّفي (قياس المحاضرة: median 2.75s لكن p95 5.99s):
+        # الجملة الواضحة (متنافس وحيد) لا تحتاج انتظار صدى — 0.35s تكفي.
+        await asyncio.sleep(0.35 if len(PENDING.get(gid, (0, []))[1]) == 1 else 0.6)
         if gid not in PENDING:
             return
         _, items = PENDING.pop(gid)
