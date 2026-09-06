@@ -62,7 +62,24 @@ function speak(t){try{const u=new SpeechSynthesisUtterance(t);u.lang=isAr(t)?"ar
 spkBtn.onclick=()=>{tts=tts?0:1;spkBtn.textContent=tts?"🔊":"🔇";spkBtn.classList.toggle("on",!!tts);};
 micBtn.onclick=()=>{running?stopAll():startAll();};
 async function startAll(){
-  try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch(e){status("🚫 الميكروفون مرفوض — اسمح به من إعدادات المتصفح");return;}
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    status("🚫 متصفحك لا يدعم الميكروفون (متصفح قديم/وضع خفي) — استخدم Chrome عادياً");
+    heardEl.innerHTML = "<div class='partial'>تعذر الوصول للميكروفون. الحلول: افتح الرابط في Chrome/Edge عادي (ليس وضع التصفح الخفي)، وفعّل إذن الميكروفون من إعدادات المتصفح ← الخصوصية ← الميكروفون.</div>";
+    return;
+  }
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    status("✅ الميكروفون يعمل — جاري فتح الاتصال...");
+  }catch(e){
+    const why = (e && (e.name === "NotAllowedError" || e.name === "SecurityError"))
+      ? "🚫 إذن الميكروفون مرفوض — من إعدادات الهاتف: المتصفح ← الأذونات ← فعّل الميكروفون، ثم أعد فتح الصفحة"
+      : (e && e.name === "NotFoundError")
+      ? "🚫 لا يوجد ميكروفون في الجهاز"
+      : "🚫 فشل فتح الميكروفون (" + (e && e.name ? e.name : "غير معروف") + ") — أغلق التطبيقات التي تستخدم الميكروفون وأعد المحاولة";
+    status(why);
+    heardEl.innerHTML = "<div class='partial'>" + why + "</div>";
+    return;
+  }
   try{audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000});}catch(e){audioCtx=new (window.AudioContext||window.webkitAudioContext)();}
   if(audioCtx.state==="suspended")audioCtx.resume();
   const src=audioCtx.createMediaStreamSource(stream);
