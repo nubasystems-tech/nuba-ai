@@ -30,7 +30,10 @@ TELNYX_KEY = os.environ.get("TELNYX_STT_API_KEY", "")
 # live_mode.py: to_thread الافتراضي يشارك مسبح خيوط عام قد يزاحمه ضغط آخر.
 _EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="multi-xlate")
 
-SILENCE_1S = b"\x00\x00" * 8000    # 🔧 Claude #13: 1 ثانية صمت حقيقية 16k mono
+# 🔧 مراجعة Claude (تدقيق تأخير): القيمة الفعلية كانت 8000 عينة int16 =
+# 500ms عند 16kHz (b"\x00\x00" يتكرر 8000 مرة = 16000 بايت = 8000 عينة)،
+# لا 1 ثانية كما يوحي الاسم — نصححها لتطابق الاسم وتزيد الهامش فوق endpointing=300ms.
+SILENCE_1S = b"\x00\x00" * 16000    # 🔧 Claude #13: 1 ثانية صمت حقيقية 16k mono (16000 عينة)
 SILENCE_250MS = b"\x00\x00" * 2000  # 125ms (تاريخياً — لا يعتمد عليه نبض duo)
 
 # محرك لكل لغة مرشحة (القاعة): عربي/إنجليزي/فرنسي/صيني/تركي
@@ -313,12 +316,10 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         # قياس 16:39: [en] التقط الفرنسية «Nous devons...» لكن _lang_of=fr أسقطه
         # → بقي الصدى «ندوغو انفستير...» وحيداً وتُوِّج بالعربية (اتجاه معكوس).
         _latin_pure = lambda t: (not any("\u0600" <= c <= "\u06FF" for c in t)) and len(t.split()) >= 3
-        # 🛡️ إصلاح هلوسة ميدانية (سجل طارق 12:04): كلام عربي حقيقي عبر ميكروفون
-        # هاتف → Cohere ar صحيح + صدى لاتيني هلوسي عبر en ("Stay with us",
-        # "Thank you" لم تُقل أبداً). قاعدة الكرسي القديمة كانت تحذف العربي
-        # الصحيح لمجرد وجود أي لاتيني! الشرط الجديد: العربي الصحيح يُحذف فقط
-        # إذا كان قصيراً (شظية ≤4 كلمات) أو ورد متنافس لاتيني **طويل حقيقي**
-        # (≥6 كلمات — جملة أجنبية كاملة فعلية لا هلوسة قصيرة).
+        # 🛡️ إصلاح هلوسة ميدانية (لقطة طارق 12:04): كلام عربي حقيقي عبر ميكروفون
+        # هاتف → صدى لاتيني هلوسي عبر en ("Stay with us", "Thank you" لم تُقل).
+        # العربي الصحيح ≥5 كلمات لا يُحذف أبداً؛ اللاتيني يجب أن يكون جملة
+        # كاملة ≥6 كلمات ليحسب دليلاً على كلام أجنبي حقيقي.
         ar_items = [it for it in valid if it[0] == "ar"]
         ar_long = any(len(it[1].split()) >= 5 for it in ar_items)
         foreign_long = any(l in ("en", "fr") and _latin_pure(t) and len(t.split()) >= 6
@@ -466,12 +467,17 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
 
     async def _release_pulse():
         """🎯 كاشف السرعة (نفس live المثبت): is_final لا يصل إلا مع صوت/صمت
-        جديد بعده — نبض صامت كل 350ms عند خمول حقيقي يحرر النتائج فوراً."""
+        جديد بعده — نبض صامت كل 350ms عند خمول حقيقي يحرر النتائج فوراً.
+        🔧 مراجعة Claude (تدقيق تأخير): المتصفح يرسل chunk كل 256ms بلا توقف
+        (live.html) سواء تحدث المستخدم أو صمت — _last_audio[0] كان يتحدث مع
+        كل chunk فيبقى "نشاطاً" دائماً ولا يهدأ 0.25s أبداً، فالنبض لا يُطلق
+        عملياً. نقرأ بدل ذلك agc_state[6] (لحظة آخر كلام حقيقي اكتشفه AGC)."""
         _n_pulse = 0
         _last_pulse_t = 0.0
         while not finished:
             await asyncio.sleep(0.4)
-            idle = time.time() - _last_audio[0]
+            last_speech = agc_state[6] if len(agc_state) > 6 and agc_state[6] else 0.0
+            idle = time.time() - last_speech
             # 🎯 (سجل 06:07): النبض المتكرر الأبدي جعل المحرك يعيد is_final
             # نفس الجملة كل نبضة = هلوسة تكرار! سلسلة قصيرة: نبضات فقط 3 ثوانٍ
             # بعد آخر كلام (تحرر النتيجة مرة) ثم صمت تام حتى كلام جديد
@@ -521,6 +527,11 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
     finished = False
     RECENT = {}
     _recent_crowned = []   # (norm_text, t) — لقاعدة الذيل اليتيم (نفس duo)
+    # 🔧 مراجعة Claude (تدقيق تأخير) CRITICAL: pump() أدناه يكتب
+    # _last_audio[0] لكن لا شيء في هذا الوضع كان يعرّفها — كل chunk صوتي في
+    # وضع القاعة كان يرفع NameError فوراً ويقتل الجلسة عند أول صوت. تعريفها
+    # هنا أيضاً يمكّن نبض تحرير مثل duo (كان غائباً كلياً في هذا الوضع).
+    _last_audio = [time.time()]
     # 🩺 حارس محركات القاعة (نفس منطق duo بعد إصلاح 16:12): محرك أبكم رغم
     # بث نشط → إعادة فتح + collector. الصمت بين الجمل لا يستدعي القتل.
     engine_got = {}
@@ -623,6 +634,11 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
                         new_up = await _open_upstream(lang)
                         if new_up:
                             upstreams[lang] = new_up
+                            # 🔧 مراجعة Claude (تدقيق تأخير): كان يُستبدل upstream
+                            # بلا collector جديد — المحرك المعاد فتحه يبقى أبكم
+                            # (لا أحد يقرأ نتائجه) حتى ينقذه حارس المحركات بعد
+                            # 20s+ — نفس إصلاح duo لمسار collector نفسه.
+                            collectors.append(asyncio.create_task(collector(lang, new_up)))
                         else:
                             upstreams.pop(lang, None)
         except (WebSocketDisconnect, Exception) as e:
@@ -658,15 +674,33 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
             asyncio.create_task(_crown(gid))
 
     async def _crown(gid: str):
-        # 🔧 Claude #5 نافذة تكيفية: متنافس واحد = نتوّج سريعاً (2.5s)
-        # — كل جملة كانت تنتظر 7s مؤكدة في القاعة! عدة متنافسين فقط
-        # يستحقون 7s (جمع المرشح الصحيح المتأخر خلف هلوسة أسرع)
-        await asyncio.sleep(2.5)
-        if gid in PENDING and len(PENDING[gid][1]) == 1:
-            pass   # متنافس وحيد — نتوّج الآن بلا انتظار إضافي
-        else:
-            await asyncio.sleep(4.5)   # منافسة حقيقية: نكمل النافذة الكاملة
-        # (قياس 12:40: المرشح الصحيح المتأخر en 5.2s / fr 5.7s كان يفوت بالقصيرة)
+        # 🔧 Claude #5 نافذة تكيفية بالسقف: متنافس واحد = سقف 2.5s، عدة
+        # متنافسين = سقف 7.0s (جمع المرشح الصحيح المتأخر خلف هلوسة أسرع —
+        # قياس 12:40: en 5.2s / fr 5.7s). لكن السقف كان نوماً أعمى ثابتاً:
+        # جملة بمتنافس واحد واضح تنتظر 2.5s كاملة حتى لو لم يظهر أي منافس
+        # ثانٍ منذ اللحظة الأولى.
+        # 🎯 مراجعة Claude (تدقيق تأخير): استطلاع كل 0.3s بدل نوم كتلة واحدة
+        # — نتوّج فور سكون حقيقي (0.8s بلا وافد جديد بعد حد أدنى 0.6s، مطابق
+        # لحساسية duo المثبتة) مع إبقاء نفس سقفي 2.5/7.0s كحد أقصى مضمون
+        # للحالات المتنازع عليها فعلاً — لا تغيير على الصحة، فقط على السرعة
+        # حين لا يوجد تنافس حقيقي.
+        start = time.time()
+        last_growth = start
+        prev_count = 1
+        while gid in PENDING:
+            await asyncio.sleep(0.3)
+            if gid not in PENDING:
+                break
+            cur_count = len(PENDING[gid][1])
+            if cur_count > prev_count:
+                last_growth = time.time()
+                prev_count = cur_count
+            now_p = time.time()
+            elapsed = now_p - start
+            quiet = now_p - last_growth
+            cap = 2.5 if prev_count == 1 else 7.0
+            if elapsed >= cap or (elapsed >= 0.6 and quiet >= 0.8):
+                break
         if gid not in PENDING:
             return
         _, items = PENDING.pop(gid)
@@ -719,12 +753,10 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
         # أسقطه الفلتر الصارم (قياس 16:39: [en] التقط «Nous devons...» لكن
         # _lang_of=fr أسقطه → تُوِّج الصدى العربي وحيداً باتجاه معكوس).
         _latin_pure = lambda t: (not any("\u0600" <= c <= "\u06FF" for c in t)) and len(t.split()) >= 3
-        # 🛡️ إصلاح هلوسة ميدانية (سجل طارق 12:04): كلام عربي حقيقي عبر ميكروفون
-        # هاتف → Cohere ar صحيح + صدى لاتيني هلوسي عبر en ("Stay with us",
-        # "Thank you" لم تُقل أبداً). قاعدة الكرسي القديمة كانت تحذف العربي
-        # الصحيح لمجرد وجود أي لاتيني! الشرط الجديد: العربي الصحيح يُحذف فقط
-        # إذا كان قصيراً (شظية ≤4 كلمات) أو ورد متنافس لاتيني **طويل حقيقي**
-        # (≥6 كلمات — جملة أجنبية كاملة فعلية لا هلوسة قصيرة).
+        # 🛡️ إصلاح هلوسة ميدانية (لقطة طارق 12:04): كلام عربي حقيقي عبر ميكروفون
+        # هاتف → صدى لاتيني هلوسي عبر en ("Stay with us", "Thank you" لم تُقل).
+        # العربي الصحيح ≥5 كلمات لا يُحذف أبداً؛ اللاتيني يجب أن يكون جملة
+        # كاملة ≥6 كلمات ليحسب دليلاً على كلام أجنبي حقيقي.
         ar_items = [it for it in valid if it[0] == "ar"]
         ar_long = any(len(it[1].split()) >= 5 for it in ar_items)
         foreign_long = any(l in ("en", "fr") and _latin_pure(t) and len(t.split()) >= 6
@@ -896,7 +928,30 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
                     asyncio.create_task(collector(lang, new_up))
                 return
 
+    async def _release_pulse():
+        """🎯 مراجعة Claude (تدقيق تأخير): وضع القاعة لم يملك أي نبض تحرير
+        إطلاقاً (خلافاً لـ live/duo) — is_final هنا كان يعتمد كلياً على
+        endpointing الطبيعي للمحرك، وحده لا يُطلق فعلياً عندما يستمر AGC في
+        تضخيم ضجيج الغرفة (مُصلح الآن في live_mode._agc_amplify). نفس نمط
+        duo: نبض صامت 350ms بعد آخر كلام حقيقي (agc_state[6])، وسلسلة قصيرة
+        3 ثوانٍ فقط لتفادي تكرار is_final لنفس الجملة."""
+        _n_pulse = 0
+        while not finished:
+            await asyncio.sleep(0.4)
+            last_speech = agc_state[6] if len(agc_state) > 6 and agc_state[6] else 0.0
+            idle = time.time() - last_speech
+            if 0.25 < idle < 3.0:
+                for _l, _u in list(upstreams.items()):
+                    try:
+                        await _u.send(SILENCE_1S)
+                        _n_pulse += 1
+                        if _n_pulse == 1:
+                            print(f"[multi] 🫀 نبض التحرير يعمل (محرك {_l})", flush=True)
+                    except Exception as _pe:
+                        print(f"[multi] نبض فشل لمحرك {_l}: {type(_pe).__name__}", flush=True)
+
     collectors = [asyncio.create_task(collector(l, u)) for l, u in list(upstreams.items())]
+    asyncio.create_task(_release_pulse())
     try:
         await pump()
     finally:

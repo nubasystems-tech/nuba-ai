@@ -146,16 +146,32 @@ def _agc_amplify(pcm: bytes, state: list) -> bytes:
     zero_cross = float(np.mean(np.abs(np.diff(np.sign(lp)))) ) * 10.0
     variability = float(np.std(lp)) * 4.0
     recent_speech = (time.time() - state[6]) < 0.45 if state[6] else False
-    is_speech = ((frame_power > noise_pwr * 1.5 and frame_power > 2.0)
-                 or (variability > noise_pwr and variability > 3.0)
-                 or (recent_speech and frame_power > noise_pwr * 0.8))  # استمرارية: الجملة الجارية لا تنقطع
-    if is_speech:
+    # 🎯 مراجعة Claude (تدقيق تأخير) CRITICAL: قفل ذاتي مكتشف بالاختبار —
+    # الشرط الثالث (الاستمرارية) كان يُحدّث state[6] بنفسه، فيجدد نافذة الـ
+    # 0.45s إلى ما لا نهاية. ضجيج غرفة ثابت يحقق frame_power > noise_pwr*0.8
+    # ببداهة (متى تقارب المتوسط المتحرك noise_pwr مع frame_power الثابت)،
+    # فيُصنَّف "كلام" أبداً بعد أول إشعال عرضي — is_speech لا يعود False قط،
+    # فلا التصفير الرقمي أدناه ولا نبض التحرير (keepalive) يعملان أبداً على
+    # صمت غرفة مستقر. الإصلاح: state[6] يتجدد فقط من الكشف الأساسي (طاقة/
+    # تذبذب حقيقيين)، لا من امتداد الاستمرارية نفسه — فتنتهي صلاحية الاستمرارية
+    # فعلياً بعد 0.45s من آخر كلام حقيقي كما صُمم أصلاً.
+    primary_speech = ((frame_power > noise_pwr * 1.5 and frame_power > 2.0)
+                       or (variability > noise_pwr and variability > 3.0))
+    is_speech = primary_speech or (recent_speech and frame_power > noise_pwr * 0.8)
+    if primary_speech:
         state[6] = time.time()
     if not is_speech:
         # إطار هادئ → نتعلم الضجيج (ببطء) ونكتم الإطار
         state[5] = noise_pwr * 0.97 + frame_power * 0.03
-        if frame_power < noise_pwr * 0.6:
-            lp = lp * 0.55   # هدوء: تخفيف (لا كتم كامل — الكتم كان يقطع شظايا الكلام المتصلة الضعيفة)
+        # 🎯 مراجعة Claude (تدقيق تأخير): بعد 200ms هدوء حقيقي نصفّر الإطار
+        # تماماً بدل تخفيفه فقط — الإطار المخفَّف (0.55x) يبقى صوتاً متصلاً
+        # يمنع endpointing المحرك (200/300ms) من إغلاق الجملة، فيتأخر
+        # is_final حتى نبض التحرير. صمت رقمي حقيقي يحرر النتيجة فوراً.
+        quiet_for = (time.time() - state[6]) if state[6] else 999.0
+        if quiet_for > 0.2:
+            lp = lp * 0.0
+        elif frame_power < noise_pwr * 0.6:
+            lp = lp * 0.55   # هدوء قصير: تخفيف (لا كتم كامل — الكتم كان يقطع شظايا الكلام المتصلة الضعيفة)
     else:
         # إطار كلام: نطرح طاقة الضجيج ونرفع للهدف
         state[5] = state[5] * 0.995
@@ -324,10 +340,19 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
         """🎯 كاشف السرعة الحقيقي (قياس 2026-09-03 18:1x):
         is_final لا يصل من المحرك إلا عند وصول صوت/صمت جديد بعده —
         بدونه جملتك تنتظر كلامك التالي = 8 ثوان تأخير ("الترجمة متأخرة جدا").
-        الحل: نبض صامت 350ms بعد آخر كلام — يحرر نتيجة جملتك فوراً."""
+        الحل: نبض صامت 350ms بعد آخر كلام — يحرر نتيجة جملتك فوراً.
+        🔧 مراجعة Claude (تدقيق تأخير): المتصفح يرسل chunk كل 256ms بلا توقف
+        (live.html) سواء تحدث المستخدم أو صمت — activity[0] كان يتحدث مع كل
+        chunk فيبقى "نشاطاً" دائماً ولا يهدأ 0.25s أبداً، فالنبض لا يُطلق عملياً.
+        نقرأ بدل ذلك agc_state[6] (لحظة آخر كلام حقيقي اكتشفه AGC) — نفس
+        القائمة التي يحدّثها _agc_amplify بالفعل، فالنبض يتبع الكلام الفعلي
+        لا وصول الشبكة."""
         while True:
             await asyncio.sleep(0.35)
-            if time.time() - activity[0] > 0.25:
+            # agc_state لا يمتد إلى الفهرس 6 إلا بعد أول استدعاء لـ_agc_amplify
+            # (أول chunk صوتي) — قبله نتصرف كأن لا كلام وصل بعد فنحافظ على النبض
+            last_speech = agc_state[6] if len(agc_state) > 6 and agc_state[6] else 0.0
+            if time.time() - last_speech > 0.25:
                 await stt_bridge.send_audio(bridge_id, SILENCE_250MS)
 
     async def collect():
