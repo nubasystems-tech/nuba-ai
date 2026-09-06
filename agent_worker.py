@@ -65,7 +65,66 @@ def run_task(task):
     t0 = time.time()
     try:
         if kind == "shell":
-            # سطر أوامر (PowerShell) — مهلة 10 دقائق
+            # 🪟 الوضع المرئي: نافذة حية على شاشة الابتوب تعرض التنفيذ لحظياً
+            # (طلب طارق: رؤية العامل يعمل كزميل) + التقاط النتيجة للخادم
+            base = os.path.dirname(os.path.abspath(__file__))
+            tdir = os.path.join(base, "tasks")
+            os.makedirs(tdir, exist_ok=True)
+            tid = str(int(time.time() * 1000))
+            ps1 = os.path.join(tdir, f"t_{tid}.ps1")
+            out_f = os.path.join(tdir, f"t_{tid}.out")
+            done_f = os.path.join(tdir, f"t_{tid}.done")
+            cmd_f = os.path.join(tdir, f"t_{tid}.cmd")
+            for f in (out_f, done_f):
+                try:
+                    os.unlink(f)
+                except OSError:
+                    pass
+            with open(ps1, "w", encoding="utf-8-sig") as fh:
+                fh.write(payload + "\n")
+            banner = "".join(c if ord(c) < 128 else "?" for c in str(task.get("note", "remote task"))[:50])
+            with open(cmd_f, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "@echo off\r\n"
+                    "chcp 65001 >nul\r\n"
+                    "title NUBA AI WORKER - live task\r\n"
+                    "color 0E\r\n"
+                    "echo ==============================================\r\n"
+                    "echo    NUBA AI WORKER - executing remote task live\r\n"
+                    f"echo    {banner}\r\n"
+                    "echo ==============================================\r\n"
+                    "echo.\r\n"
+                    f"powershell -NoProfile -ExecutionPolicy Bypass -File \"{ps1}\" > \"{out_f}\" 2>&1\r\n"
+                    f"type \"{out_f}\"\r\n"
+                    f"echo %ERRORLEVEL%> \"{done_f}\"\r\n"
+                    "echo.\r\n"
+                    "echo    TASK COMPLETE - window closes in 8s\r\n"
+                    "timeout /t 8 >nul\r\n"
+                )
+            t0 = time.time()
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "", cmd_f])
+            except Exception as e:
+                return {"ok": False, "error": f"launch failed: {e}"}
+            while time.time() - t0 < 600:
+                if os.path.exists(done_f):
+                    time.sleep(0.3)
+                    try:
+                        code = int(open(done_f).read().strip() or 0)
+                    except Exception:
+                        code = 0
+                    out = ""
+                    try:
+                        out = open(out_f, encoding="utf-8", errors="replace").read()[-8000:]
+                    except Exception:
+                        pass
+                    return {"ok": code == 0, "code": code,
+                            "output": out, "error": "", "secs": round(time.time() - t0, 1),
+                            "visible": True}
+                time.sleep(1.0)
+            return {"ok": False, "error": "timeout waiting visible task"}
+        if kind == "shell_hidden":
+            # سطر أوامر (PowerShell) — مهلة 10 دقائق (خفي كما كان)
             p = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", payload],
                 capture_output=True, text=True, errors="replace", timeout=600)
