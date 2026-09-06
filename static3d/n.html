@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>N — Nuba AI</title>
+<style>
+:root{--bg:#0b0e16;--gold:#d4a017;--gold2:#f0c948;--nile:#1c6ba0;--palm:#2e7d4f;--panel:#111522;--txt:#e8e6df}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,'Segoe UI',Tahoma,sans-serif;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 10px}
+.logo{width:42px;height:42px;background:linear-gradient(135deg,var(--gold),var(--gold2));border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:26px;color:#0b0e16;font-family:Georgia,serif}
+.htitle{font-size:15px;color:var(--gold2);font-weight:700}
+.spk{background:none;border:none;font-size:24px;cursor:pointer;opacity:.55;transition:opacity .2s}
+.spk.on{opacity:1}
+#status{text-align:center;font-size:13px;padding:4px;color:#9aa;min-height:22px}
+main{flex:1;display:flex;flex-direction:column;gap:10px;padding:10px 16px;overflow:hidden}
+.card{background:var(--panel);border:1px solid rgba(212,160,23,.25);border-radius:14px;padding:12px 14px;flex:1;display:flex;flex-direction:column;overflow:hidden}
+.clabel{font-size:11px;color:#778;letter-spacing:.5px;margin-bottom:6px}
+#heard{flex:1.1;font-size:17px;line-height:1.6;overflow-y:auto;color:#ccd;word-break:break-word}
+#trans{flex:2;font-size:24px;font-weight:700;line-height:1.55;overflow-y:auto;color:var(--gold2);word-break:break-word}
+.micwrap{display:flex;justify-content:center;align-items:center;padding:16px 0 26px;position:relative}
+#micBtn{width:92px;height:92px;border-radius:50%;border:3px solid var(--gold);background:radial-gradient(circle at 35% 35%, #1a2030, var(--panel));color:var(--gold2);font-size:40px;cursor:pointer;transition:all .15s;outline:none}
+#micBtn.rec{border-color:#e5484d;background:radial-gradient(circle at 35% 35%, #301818, #200);animation:pulse 1.2s infinite;color:#ff6b6b}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(229,72,77,.45)}70%{box-shadow:0 0 0 22px rgba(229,72,77,0)}100%{box-shadow:0 0 0 0 rgba(229,72,77,0)}}
+#meter{height:5px;background:#1a1f2e;border-radius:3px;overflow:hidden;margin:8px 40px}
+#meterFill{height:100%;width:0%;background:linear-gradient(90deg,var(--palm),var(--gold2));transition:width .12s}
+footer{text-align:center;font-size:11px;color:#667;padding-bottom:10px}
+.partial{opacity:.65}
+.ar{text-align:right;font-family:inherit}
+.en{text-align:left;direction:ltr}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">N</div>
+  <div class="htitle">Nuba AI <span style="font-size:10px;color:#889">عربي ↔ English</span></div>
+  <button class="spk" id="spkBtn" title="النطق الصوتي">🔇</button>
+</header>
+<div id="status">اضغط الميكروفون وابدأ الكلام</div>
+<div id="meter"><div id="meterFill"></div></div>
+<main>
+  <div class="card"><div class="clabel">ما قلته</div><div id="heard"></div></div>
+  <div class="card"><div class="clabel">الترجمة</div><div id="trans"></div></div>
+</main>
+<div class="micwrap"><button id="micBtn">🎙</button></div>
+<footer>Nuba AI v18</footer>
+<script>
+"use strict";
+let ws=null,running=false,audioCtx=null,stream=null,proc=null,tts=0,wakeLock=null,lastPcm=0;
+const $=id=>document.getElementById(id);
+const micBtn=$("micBtn"),statusEl=$("status"),heardEl=$("heard"),transEl=$("trans"),meterFill=$("meterFill"),spkBtn=$("spkBtn");
+function status(t){statusEl.textContent=t;}
+function esc(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function isAr(s){return /[\u0600-\u06FF]/.test(s);}
+function addHeard(t,partial){const d=document.createElement("div");d.className=(partial?"partial ":"")+(isAr(t)?"ar":"en");d.textContent=t;heardEl.appendChild(d);while(heardEl.children.length>40)heardEl.removeChild(heardEl.firstChild);heardEl.scrollTop=heardEl.scrollHeight;}
+function addTrans(t){const d=document.createElement("div");d.className=isAr(t)?"ar":"en";d.textContent=t;transEl.appendChild(d);while(transEl.children.length>40)transEl.removeChild(transEl.firstChild);transEl.scrollTop=transEl.scrollHeight;if(tts){speak(t);}}
+function speak(t){try{const u=new SpeechSynthesisUtterance(t);u.lang=isAr(t)?"ar-SA":"en-US";speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+spkBtn.onclick=()=>{tts=tts?0:1;spkBtn.textContent=tts?"🔊":"🔇";spkBtn.classList.toggle("on",!!tts);};
+micBtn.onclick=()=>{running?stopAll():startAll();};
+async function startAll(){
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch(e){status("🚫 الميكروفون مرفوض — اسمح به من إعدادات المتصفح");return;}
+  try{audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000});}catch(e){audioCtx=new (window.AudioContext||window.webkitAudioContext)();}
+  if(audioCtx.state==="suspended")audioCtx.resume();
+  const src=audioCtx.createMediaStreamSource(stream);
+  const gain=audioCtx.createGain();gain.gain.value=3.0;
+  proc=audioCtx.createScriptProcessor(4096,1,1);
+  const proto=location.protocol==="https:"?"wss":"ws";
+  ws=new WebSocket(`${proto}://${location.host}/ws/duo?lang_a=ar&lang_b=en&tts=${tts}`);
+  ws.onopen=()=>{running=true;micBtn.classList.add("rec");micBtn.textContent="■";status("🟢 يستمع الآن — تحدث بحرية (عربي أو English)");};
+  ws.onmessage=ev=>{try{const m=JSON.parse(ev.data);
+    if(m.type==="source"){addHeard(m.text,false);}
+    else if(m.type==="translation"){addTrans(m.text);}
+    else if(m.type==="source_partial"){addHeard(m.text,true);}
+  }catch(e){}};
+  ws.onerror=()=>{if(!running)status("⚠️ فشل الاتصال — أعد المحاولة");};
+  ws.onclose=()=>{if(running){status("⚠️ انقطع الاتصال — اضغط للمحاولة");stopAll();}};
+  proc.onaudioprocess=e=>{
+    if(!ws||ws.readyState!==1)return;
+    const inp=e.inputBuffer.getChannelData(0);
+    let peak=0;for(let i=0;i<inp.length;i++){const v=Math.abs(inp[i]);if(v>peak)peak=v;}
+    meterFill.style.width=Math.min(100,peak*300)+"%";
+    if(peak<0.008){const now=Date.now();if(now-lastPcm>9000){try{ws.send(new Int16Array(1600).buffer);lastPcm=now;}catch(x){}}return;}
+    lastPcm=Date.now();
+    const out=new Int16Array(inp.length);
+    for(let i=0;i<inp.length;i++){let s=Math.max(-1,Math.min(1,inp[i]));out[i]=s<0?s*32768:s*32767;}
+    try{ws.send(out.buffer);}catch(x){}
+  };
+  src.connect(gain);gain.connect(proc);proc.connect(audioCtx.destination);
+  status("⏳ جاري الفتح...");
+  if("wakeLock" in navigator){try{wakeLock=await navigator.wakeLock.request("screen");}catch(e){}}
+  document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"&&"wakeLock" in navigator){try{wakeLock=await navigator.wakeLock.request("screen");}catch(e){}}});
+}
+function stopAll(){
+  running=false;micBtn.classList.remove("rec");micBtn.textContent="🎙";meterFill.style.width="0%";
+  try{ws&&ws.close();}catch(e){}
+  try{proc&&proc.disconnect();}catch(e){}
+  try{stream&&stream.getTracks().forEach(t=>t.stop());}catch(e){}
+  try{audioCtx&&audioCtx.close();}catch(e){}
+  ws=null;proc=null;stream=null;audioCtx=null;
+  if(!running)status("متوقف — اضغط الميكروفون للبدء");
+}
+</script>
+</body>
+</html>
