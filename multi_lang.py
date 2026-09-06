@@ -10,6 +10,7 @@
 import asyncio
 import metrics
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import json
 import time
 from typing import Optional
@@ -24,6 +25,10 @@ import sys
 sys.path.insert(0, "/home/ubuntu/translator-app")
 import os
 TELNYX_KEY = os.environ.get("TELNYX_STT_API_KEY", "")
+
+# 🔧 تنفيذ مخصص محدود (سقف 6 خيوط) لـ translate_sync/tts_sync — نفس منطق
+# live_mode.py: to_thread الافتراضي يشارك مسبح خيوط عام قد يزاحمه ضغط آخر.
+_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="multi-xlate")
 
 SILENCE_1S = b"\x00\x00" * 8000    # 🔧 Claude #13: 1 ثانية صمت حقيقية 16k mono
 SILENCE_250MS = b"\x00\x00" * 2000  # 125ms (تاريخياً — لا يعتمد عليه نبض duo)
@@ -263,11 +268,6 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         _, items = PENDING.pop(gid)
         if not items:
             return
-        now = time.time()
-        key0 = text_key(items[0][1])[:25]
-        for k, t in SENT_AT.items():
-            if now - t < 12 and k[:25] == key0:
-                return
         # 🛡️ فلتر لغوي صارم للتبادل: جملة إنجليزية لا تصدر عبر محرك العربية والعكس
         # (قياس اليوم: Cohere التقط جملة إنجليزية بثقة أعلى → انعكس الاتجاه خطأً)
         _ar_chars = lambda t: sum(1 for c in t if "\u0600" <= c <= "\u06FF")
@@ -359,19 +359,32 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         # 🛡️ (سجل 06:07): «Suppose» — صدى صوت عربي سمعه محرك en ككلمة لاتينية
         # واحدة وترجمها «شكراً لك» = الهلوسة المرئية. متنافس لاتيني كلمة-واحدة
         # مع متنافس عربي بنفس النافذة = صدى مؤكد → حجب ويتوج العربي
+        # 🎯 توسيع: الصدى القصير قد يصل كلمتين ("Merci beaucoup") أو بحروف
+        # لاتينية مُشكّلة (accented — "café", "être") لا يجتازها isascii() —
+        # الشرط الحاسم يبقى وجود منافس عربي في نفس النافذة (صدى مؤكد) واستبعاد
+        # أي نص عربي فعلي (حروف عربية) من الحجب
         if len(valid) >= 2 and any(l == "ar" for l, t, c in valid):
             for echo in [(l, t, c) for l, t, c in valid
-                         if l != "ar" and len(t.split()) <= 1 and t.isascii()]:
+                         if l != "ar" and len(t.split()) <= 2
+                         and not any("؀" <= ch <= "ۿ" for ch in t)]:
                 valid.remove(echo)
-                print(f"[duo] حجب صدى لاتيني: [{echo[0]}] '{echo[1][:20]}'", flush=True)
+                print(f"[duo] حجب صدى قصير: [{echo[0]}] '{echo[1][:20]}'", flush=True)
         best = max(valid, key=_fair)
         lang, text, conf = best
+        # 🎯 فحص التكرار على الفائز الفعلي بعد كل الدمج/الفلترة — ليس على أول
+        # مرشح خام في النافذة (items[0]) الذي قد لا يكون حتى الفائز
+        now = time.time()
+        key0 = text_key(text)[:25]
+        for k, t in SENT_AT.items():
+            if now - t < 12 and k[:25] == key0:
+                return
         # 🔧 Claude #11: تفريغ القديم (تسريب بطيء عبر ساعات المؤتمر)
         for k in [k for k, t in SENT_AT.items() if now - t > 60]:
             SENT_AT.pop(k, None)
         SENT_AT[text_key(text)] = now
         _recent_crowned.append((" ".join(text.lower().split()), now))
-        if len(_recent_crowned) > 8:
+        del _recent_crowned[:-32]
+        while _recent_crowned and now - _recent_crowned[0][1] > 12:
             _recent_crowned.pop(0)
         target = other.get(lang, lang_b)
         metrics.inc("sentences_total")
@@ -379,7 +392,9 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
                                  "target_lang": target})
         try:
             try:
-                translated = await asyncio.wait_for(asyncio.to_thread(translate_sync, text, target), timeout=8)
+                loop = asyncio.get_running_loop()
+                translated = await asyncio.wait_for(
+                    loop.run_in_executor(_EXECUTOR, translate_sync, text, target), timeout=8)
             except asyncio.TimeoutError:
                 translated = None
         except Exception:
@@ -648,12 +663,6 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
         _, items = PENDING.pop(gid)
         if not items:
             return
-        # منع إعادة إرسال جملة شديدة الشكل بواحدة أرسلتها منذ قليل
-        now = time.time()
-        key0 = text_key(items[0][1])[:25]
-        for k, t in SENT_AT.items():
-            if now - t < 12 and k[:25] == key0:
-                return
         # 🛡️ الفلتر اللغوي الصارم (نفس duo — قياس دورة المؤتمر 2026-09-03):
         # صوت 10% + ضجيج + سرعة 1.35x: كل الجمل صدرت عبر محرك ar!
         # (الإنجليزية عبر ar ترجمت عربية→عربية، والفرنسية هلوسة عربية) —
@@ -744,12 +753,20 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
             return (trust + bonus, len(text))
         best = max(valid, key=_fair)
         lang, text, conf = best
+        # 🎯 فحص التكرار على الفائز الفعلي بعد كل الدمج/الفلترة — ليس على أول
+        # مرشح خام في النافذة (items[0]) الذي قد لا يكون حتى الفائز
+        now = time.time()
+        key0 = text_key(text)[:25]
+        for k, t in SENT_AT.items():
+            if now - t < 12 and k[:25] == key0:
+                return
         # 🔧 Claude #11: تفريغ القديم (تسريب بطيء عبر ساعات المؤتمر)
         for k in [k for k, t in SENT_AT.items() if now - t > 60]:
             SENT_AT.pop(k, None)
         SENT_AT[text_key(text)] = now
         _recent_crowned.append((" ".join(text.lower().split()), now))
-        if len(_recent_crowned) > 8:
+        del _recent_crowned[:-32]
+        while _recent_crowned and now - _recent_crowned[0][1] > 12:
             _recent_crowned.pop(0)
         await user_ws.send_json({"type": "source", "text": text, "speaker_lang": lang})
         metrics.inc("sentences_total")
@@ -763,15 +780,26 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
             if l != "ar" and c >= 0.30 and text_key(t) not in SENT_AT:
                 if second is None or len(t) > len(second[1]):
                     second = (l, t, c)
+        # 🛡️ نفس فحص الفائز الأول: مسح البادئة 25 حرف على SENT_AT + الذيل
+        # اليتيم قبل الإرسال — تمريرة ثانية كانت تتجاوز كلا الفحصين
+        if second is not None:
+            l2, t2, c2 = second
+            k2 = text_key(t2)[:25]
+            _dupe2 = any(now - t < 12 and k[:25] == k2 for k, t in SENT_AT.items())
+            if _dupe2 or _is_orphan_tail(t2, now):
+                second = None
         if second:
             l2, t2, c2 = second
             SENT_AT[text_key(t2)] = now
             _recent_crowned.append((" ".join(t2.lower().split()), now))
-            if len(_recent_crowned) > 8:
+            del _recent_crowned[:-32]
+            while _recent_crowned and now - _recent_crowned[0][1] > 12:
                 _recent_crowned.pop(0)
             await user_ws.send_json({"type": "source", "text": t2, "speaker_lang": l2})
             try:
-                translated2 = await asyncio.to_thread(translate_sync, t2, tts_lang)
+                loop = asyncio.get_running_loop()
+                translated2 = await asyncio.wait_for(
+                    loop.run_in_executor(_EXECUTOR, translate_sync, t2, tts_lang), timeout=8)
             except Exception:
                 translated2 = None
             if translated2:
@@ -786,7 +814,9 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
                             pass
                 asyncio.create_task(_speak2())
         try:
-            translated = await asyncio.to_thread(translate_sync, text, tts_lang)
+            loop = asyncio.get_running_loop()
+            translated = await asyncio.wait_for(
+                loop.run_in_executor(_EXECUTOR, translate_sync, text, tts_lang), timeout=8)
         except Exception:
             translated = None
         if translated:
@@ -842,8 +872,10 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
                 new_up = await _open_upstream(lang)
                 if new_up:
                     upstreams[lang] = new_up
-                    # استمر بالجمع على الاتصال الجديد
-                    await collector(lang, new_up)
+                    # 🔧 نفس إصلاح duo (Claude #7): الاستدعاء الذاتي المباشر
+                    # يبني stack لا يُفك (RecursionError بعد عدة انقطاعات) —
+                    # مهمة جديدة بدلاً منه
+                    asyncio.create_task(collector(lang, new_up))
                 return
 
     collectors = [asyncio.create_task(collector(l, u)) for l, u in list(upstreams.items())]
@@ -873,7 +905,12 @@ async def _tts_audio(text: str, lang: str):
     GET خفيف لملف 9KB لا يكسر شيئاً (نفس آلية الصور والصفحات)."""
     try:
         import subprocess as _sp
-        p = await asyncio.to_thread(tts_sync, text, lang)
+        try:
+            loop = asyncio.get_running_loop()
+            p = await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, tts_sync, text, lang), timeout=10)
+        except asyncio.TimeoutError:
+            print("[multi] TTS تجاوز 10s — نتجاهله", flush=True)
+            return None
         raw = p.read_bytes()
         suffix = p.suffix
         p.unlink(missing_ok=True)

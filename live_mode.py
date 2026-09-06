@@ -7,6 +7,7 @@ import asyncio
 import stt_bridge
 import metrics
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import json
 import time
 
@@ -19,6 +20,10 @@ from telnyx_primitives import translate_sync, tts_sync
 
 import os
 TELNYX_KEY = os.environ.get("TELNYX_STT_API_KEY", "")
+
+# 🔧 تنفيذ مخصص محدود (سقف 6 خيوط) لـ translate_sync/tts_sync: تنفيذ المهام
+# الافتراضي (to_thread) يشارك مسبح الخيوط الشامل — تحت ضغط يزاحم مهاماً أخرى.
+_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="live-xlate")
 
 SILENCE_250MS = b"\x00\x00" * 4000  # صمت ربع ثانية للنبض
 
@@ -73,7 +78,8 @@ async def _tts_audio(text: str, lang: str):
         import subprocess as _sp
         import time as _tmod
         try:
-            p = await asyncio.wait_for(asyncio.to_thread(tts_sync, text, lang), timeout=10)
+            loop = asyncio.get_running_loop()
+            p = await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, tts_sync, text, lang), timeout=10)
         except asyncio.TimeoutError:
             print("[live] TTS تجاوز 10s — نتجاهله", flush=True)
             return None
@@ -178,20 +184,39 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
     _frag_last = 0.0           # لحظة آخر شظية وصلت
     _frag_tasks = []           # مؤقتات الإغلاق المعلقة
     _recent_sent = []          # آخر النصوص المرسلة (كشف التكرار/الهلوسة)
-    _tr_inflight = 0           # طلبات الترجمة الجارية (throttle ضد تجمد gtx)
+    _tr_sem = asyncio.Semaphore(3)  # طلبات الترجمة الجارية (throttle ضد تجمد gtx)
 
-    async def _flush_fragments():
+    def text_key(text: str) -> str:
+        """مفتاح خالٍ من الترقيم/المسافات — نفس منطق multi_lang.py، يُستخدم
+        لمنع إعادة بث جملة كاملة سبق إرسالها بعد دمج شظاياها."""
+        return "".join(c.lower() for c in text if c.isalnum())[:40]
+
+    async def _flush_fragments(fragments=None):
         """إطلاق الفكرة المجمعة كاملة: نص + ترجمة (مرة واحدة بدل شظية شظية).
-        مع throttle: لا نطلق >3 ترجمات متوازية (gtx يتجمد تحت التوازي الكثيف —
+        fragments: لقطة (snapshot) مُمررة من المستدعي — create_task يجدول
+        التنفيذ لاحقاً، فلو استمر الكود بعده وأعاد تعيين _fragments قبل أن
+        تُنفَّذ المهمة، كانت الجملة المكتملة تُفقد (سباق). مع throttle عبر
+        semaphore: لا نطلق >3 ترجمات متوازية (gtx يتجمد تحت التوازي الكثيف —
         قياس ميداني: بعد ~100 كلمة توقف التدفق تماماً)."""
-        nonlocal _fragments, _frag_tasks, _tr_inflight
-        if not _fragments:
+        nonlocal _fragments, _frag_tasks, _recent_sent
+        frags = fragments if fragments is not None else _fragments
+        if not frags:
             return
-        full_sentence = " ".join(_fragments)
-        _fragments = []
+        full_sentence = " ".join(frags)
+        if fragments is None:
+            _fragments = []
         for t in _frag_tasks:
             t.cancel()
         _frag_tasks = []
+        # 🛡️ منع إعادة بث جملة كاملة سبق إرسالها: الدمج قد يعيد إنتاج نفس
+        # الجملة التي خرجت سابقاً شظية-شظية أو كجملة متكررة
+        fkey = text_key(full_sentence)
+        if fkey and fkey in _recent_sent:
+            return
+        if fkey:
+            _recent_sent.append(fkey)
+            if len(_recent_sent) > 40:
+                _recent_sent.pop(0)
         metrics.inc("sentences_total")
         print(f"[live] 📝 جملة كاملة ({len(full_sentence.split())} كلمة): {full_sentence[:60]}", flush=True)
         try:
@@ -200,25 +225,28 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
             return
         # ترجمة الفكرة الكاملة في مهمة مستقلة مع مراقبة التوازي
         async def _translate_and_speak(txt=full_sentence, _t=time.time()):
-            nonlocal _tr_inflight
-            # انتظار مهذب لو الطلبات المتوازية ممتلئة (طابور طبيعي بلا تجمد)
-            waited = 0.0
-            while _tr_inflight >= 3 and waited < 20:
-                await asyncio.sleep(0.3)
-                waited += 0.3
-            if _tr_inflight >= 3:
+            # semaphore بدل عدّاد يدوي: انتظار مهذب حتى 2s لو الطلبات المتوازية
+            # ممتلئة (طابور طبيعي بلا تجمد)؛ عند الفشل نُعلم العميل بدل الإسقاط الصامت
+            try:
+                await asyncio.wait_for(_tr_sem.acquire(), timeout=2)
+            except asyncio.TimeoutError:
+                try:
+                    await user_ws.send_json({"type": "translation_skipped"})
+                except Exception:
+                    pass
                 return  # أطلقناها — النص الأصلي موجود على أي حال
-            _tr_inflight += 1
             try:
                 # Claude #10: مهلة 8s — الترجمة المتجمدة كانت تقتل الجلسة كلها
                 try:
-                    translated = await asyncio.wait_for(asyncio.to_thread(translate_sync, txt, tts_lang), timeout=8)
+                    loop = asyncio.get_running_loop()
+                    translated = await asyncio.wait_for(
+                        loop.run_in_executor(_EXECUTOR, translate_sync, txt, tts_lang), timeout=8)
                 except asyncio.TimeoutError:
                     translated = None
             except Exception:
                 translated = None
             finally:
-                _tr_inflight -= 1
+                _tr_sem.release()
             if not translated:
                 return
             try:
@@ -307,7 +335,7 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
         قياس 2026-09-03: داخل uvicorn يصل is_final بعد +8.3s من نهاية الكلام
         بينما نفس الصوت خارجها +0.3s — علة event loop مؤكدة بعد 14 تشخيصاً.
         الجسر يدير websocket المحرك في حلقة مستقلة ونستقبل بالpoll السريع."""
-        nonlocal _fragments, _frag_last, _frag_tasks, _recent_sent, _tr_inflight
+        nonlocal _fragments, _frag_last, _frag_tasks, _recent_sent
         reconnect_backoff = 0
         if not await connect_and_drain():
             return
@@ -359,16 +387,24 @@ async def live_translation_worker(user_ws: WebSocket, src_lang: str, tts_lang: s
                         _fragments.append(text)
                     else:
                         if _fragments:
-                            asyncio.create_task(_flush_fragments())
-                        _fragments = [text]
+                            # 🔧 لقطة قبل create_task: الجدولة تؤجل التنفيذ،
+                            # فلو نفّذنا "_fragments = [text]" أولاً ستقرأ
+                            # المهمة القيمة الجديدة بدل الجملة المكتملة (سباق)
+                            old, _fragments = _fragments, [text]
+                            asyncio.create_task(_flush_fragments(old))
+                        else:
+                            _fragments = [text]
                     _frag_last = now
                     word_count = sum(len(f.split()) for f in _fragments)
                     if word_count >= 5:
-                        asyncio.create_task(_flush_fragments())
+                        old, _fragments = _fragments, []
+                        asyncio.create_task(_flush_fragments(old))
                     async def _closer():
+                        nonlocal _fragments
                         await asyncio.sleep(0.6)
                         if _fragments and _frag_last and (time.time() - _frag_last) >= 0.55:
-                            asyncio.create_task(_flush_fragments())
+                            old, _fragments = _fragments, []
+                            asyncio.create_task(_flush_fragments(old))
                     _frag_tasks.append(asyncio.create_task(_closer()))
             except asyncio.CancelledError:
                 return
