@@ -155,8 +155,13 @@ def _agc_amplify(pcm: bytes, state: list) -> bytes:
     # صمت غرفة مستقر. الإصلاح: state[6] يتجدد فقط من الكشف الأساسي (طاقة/
     # تذبذب حقيقيين)، لا من امتداد الاستمرارية نفسه — فتنتهي صلاحية الاستمرارية
     # فعلياً بعد 0.45s من آخر كلام حقيقي كما صُمم أصلاً.
+    # 🎯 تسامح ضجيج القاعة (قياس المحاضرة 10:08): كلام خافت 10% حجم مع ضجيج
+    # مستمر 30% يجعل frame_power يخفق عتبة 2.0 الثابتة كثيراً → تقطيع الجملة
+    # لشظايا. التذبذب (variability) هو بصمة الكلام ضد الضجيج الأملس —
+    # نضيف مساراً: تذبذب واضح فوق الضجيج + طاقة غير صفروية = كلام.
     primary_speech = ((frame_power > noise_pwr * 1.5 and frame_power > 2.0)
-                       or (variability > noise_pwr and variability > 3.0))
+                   or (variability > noise_pwr and variability > 3.0)
+                   or (variability > noise_pwr * 2.5 and frame_power > noise_pwr * 0.6))
     is_speech = primary_speech or (recent_speech and frame_power > noise_pwr * 0.8)
     if primary_speech:
         state[6] = time.time()
