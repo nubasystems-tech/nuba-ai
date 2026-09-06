@@ -34,6 +34,29 @@ DUP_WINDOW_S = 12.0       # نافذة منع تكرار الجملة
 MIN_WORDS = 2             # أقل من كلمتين = ليست جملة (تقتل MR.A وThank you المفردة؟
                           # لا — Thank you كلمتان: نستخدم قائمة سوداء للعبارات المهملة)
 
+# 🔥 حفاظ على دفء المحرك: ضجيج هادئ طويل قد يجعل Telnyx/Cohere يغلق الجلسة
+# منطقياً حتى لو استمر تدفق البايتات — أول جملة بعد ذلك تصل متأخرة لأنه يعيد
+# الفتح. حل: كل KEEPALIVE_INTERVAL_S من الهدوء التام نُعيد بثّ آخر عيّنة صوت
+# حقيقي (وليس أصفار) كنبضة "حياة" — ثم نكتم أي نتيجة تعود منها فوراً.
+KEEPALIVE_INTERVAL_S = 20.0
+KEEPALIVE_SUPPRESS_S = 2.5
+
+# 👑 نافذة التتويج: عادية 0.35s. لكن Cohere أحياناً يرسل is_final لجزء من
+# الجملة ثم is_final آخر أكمل بعد أكثر من 0.35s — فيولّد ذلك ترجمتين لجملة
+# منطقية واحدة. عندما تبدو النتيجة "جزءاً" (قصيرة، بلا علامة ترقيم ختامية)
+# نمنحها نافذة أطول قبل التتويج حتى تلحق النسخة الكاملة بنفس الدفعة.
+CROWN_WAIT_S = 0.35
+CROWN_WAIT_FRAGMENT_S = 0.90
+
+
+def _looks_fragment(t: str) -> bool:
+    """جملة تبدو غير مكتملة (قصيرة، بلا علامة ترقيم ختامية) → على الأغلب
+    Cohere سيتبعها is_final أكمل خلال لحظات."""
+    words = t.split()
+    if not words or len(words) > 6:
+        return False
+    return t[-1] not in ".!?؟،۔"
+
 
 # ───────── عبارات هلوسة شائعة (قياسات ميدانية: تظهر من الصمت الخالص) ─────────
 HALLUCINATED = {
@@ -41,22 +64,59 @@ HALLUCINATED = {
     "hello", "hello.", "hi", "hi.", "bye", "goodbye", "okay", "ok",
     "mr. a", "mra", "a", "yeah", "yes", "no", "mm", "hmm", "um",
     "thank you. thank you.", "bye!", "welcome", "you",
+    # هلوسات صمت بحروف لاتينية (نقحرة عربية شائعة من محرك Cohere على الضجيج)
+    "shnu anta", "shnu enta", "shino enta", "shino inta", "wesh",
 }
-# الترجمة الإنجليزية السريعة (gtx) — بلا مفاتيح
+# هلوسات الصمت بالعربية (قياسات ميدانية: "شنو انت" وأخواتها تظهر من ضجيج بحت)
+HALLUCINATED_AR = {
+    "شكرا", "شكرا لكم", "شكرا جزيلا", "شكراً", "مرحبا", "اهلا", "اهلا وسهلا",
+    "مع السلامة", "الى اللقاء", "نعم", "لا", "حسنا", "طيب", "اوكي", "اوك",
+    "امم", "هاه", "ايوه", "شنو انت", "شنو انتا", "شنو إنت", "وش فيه", "شو في",
+}
+# الترجمة الإنجليزية السريعة (gtx) — بلا مفاتيح، مع مزود احتياطي عند الفشل
 
 
-def translate_sync(text: str, target: str) -> str:
+def _translate_gtx(text: str, target: str) -> str:
     q = urllib.parse.quote(text)
     url = (f"https://translate.googleapis.com/translate_a/single"
            f"?client=gtx&sl=auto&tl={target}&dt=t&q={q}")
-    for _ in range(2):
-        try:
-            with urllib.request.urlopen(url, timeout=6) as r:
-                data = json.loads(r.read().decode())
-                return "".join(seg[0] for seg in data[0] if seg[0])
-        except Exception:
-            time.sleep(0.4)
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            data = json.loads(r.read().decode())
+            return "".join(seg[0] for seg in data[0] if seg[0])
+    except Exception:
+        return ""
+
+
+def _translate_mymemory(text: str, target: str) -> str:
+    """🔁 مزود احتياطي بلا مفتاح — يُستدعى فقط إذا فشل gtx مرتين.
+    مهلته الخاصة 3s حتى لا يطيل زمن الاستجابة الكلي أكثر من اللازم."""
+    src = "ar" if _lang_of(text) == "ar" else "en"
+    q = urllib.parse.quote(text[:500])   # MyMemory يحد طول الاستعلام
+    url = f"https://api.mymemory.translated.net/get?q={q}&langpair={src}|{target}"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            data = json.loads(r.read().decode())
+            t = (data.get("responseData") or {}).get("translatedText", "").strip()
+            if t and "MYMEMORY WARNING" not in t.upper():
+                return t
+    except Exception:
+        pass
     return ""
+
+
+def translate_sync(text: str, target: str) -> str:
+    """gtx أولاً (محاولتان سريعتان) ثم MyMemory كمزود ثانٍ عند فشل الأول
+    تماماً — بلا نقطة فشل واحدة."""
+    out = _translate_gtx(text, target)
+    if out:
+        return out
+    time.sleep(0.2)
+    out = _translate_gtx(text, target)
+    if out:
+        return out
+    print(f"[v23] gtx فشل مرتين لـ '{text[:30]}' → تحويل لمزود احتياطي", flush=True)
+    return _translate_mymemory(text, target)
 
 
 def tts_sync(text: str, lang: str) -> str | None:
@@ -65,16 +125,21 @@ def tts_sync(text: str, lang: str) -> str | None:
 
 
 def _norm_key(t: str) -> str:
-    """بصمة نص: أحرف/أرقام فقط صغيرة — تقتل التكرار بأي علامات."""
+    """بصمة نص: أحرف/أرقام فقط صغيرة — تقتل التكرار بأي علامات.
+    isalnum()/lower() يعملان بشكل صحيح على العربية أيضاً (بلا حالة أحرف)."""
     return "".join(c for c in t.lower() if c.isalnum())[:60]
 
 
+# تُبنى مرة واحدة عند التحميل (بدل إعادة بنائها في كل نداء) وتضم EN + AR معاً
+_HALLUCINATED_NORM = {_norm_key(h) for h in (HALLUCINATED | HALLUCINATED_AR)}
+
+
 def _is_hallucination(text: str) -> bool:
-    """هل هذه الجملة هلوسة معروفة من الصمت؟"""
+    """هل هذه الجملة هلوسة معروفة من الصمت؟ (إنجليزية أو عربية)."""
     k = _norm_key(text)
     if not k:
         return True
-    if k in {h.replace(" ", "").replace(".", "").replace("!", "") for h in HALLUCINATED}:
+    if k in _HALLUCINATED_NORM:
         return True
     # MR.A ×14: تكرار نفس المقطع قصير ≥4 مرات = هلوسة حلزونية
     words = text.lower().split()
@@ -102,6 +167,9 @@ class EngineSession:
         self.last_speech_t = 0.0               # آخر لحظة كلام حقيقي (من العميل)
         self.pulse_sent = 0
         self.final_after_pulse = False         # هل آخر is_final جاء بعد نبض؟
+        self.keepalive_sample: bytes | None = None  # آخر عينة صوت حقيقي (لإبقاء المحرك دافئاً)
+        self.last_keepalive_t = 0.0
+        self.suppress_until = 0.0              # حتى هذه اللحظة: اكتم أي نتيجة (رد نبضة حياة)
 
     async def connect(self):
         ep = 200
@@ -129,6 +197,7 @@ class EngineSession:
         if speech_now:
             self.last_speech_t = time.time()
             self.final_after_pulse = False     # كلام جديد: صفّر علم النبض
+            self.keepalive_sample = pcm        # احتفظ بعينة صوت حقيقي لاستخدامها لاحقاً كنبضة حياة
         # نبض تحرير مزدوج الأمان:
         # (أ) بعد كلام مكتشف: نبضة واحدة بعد PULSE_AFTER_S (الطريق السريع)
         # (ب) بلا كلام مكتشف أصلاً: نبضة دورية كل 3s — لأن RMS قد يفشل الكشف
@@ -147,6 +216,22 @@ class EngineSession:
                 except Exception:
                     pass
             self.final_after_pulse = True
+        # 🔥 نبضة حياة على ضجيج هادئ طويل: صمت خالص لفترة طويلة قد يجعل
+        # المحرك (Cohere خصوصاً) يغلق الجلسة منطقياً رغم استمرار تدفق البايتات،
+        # فتصل أول جملة بعد ذلك متأخرة لأنه يعيد الفتح. نعيد بث آخر عينة صوت
+        # حقيقي (وليس أصفار) كل KEEPALIVE_INTERVAL_S لإقناعه أن الجلسة حيّة،
+        # ثم نكتم أي نتيجة تعود منها (suppress_until) حتى لا تتسرب للمستخدم.
+        now = time.time()
+        if (not speech_now and self.keepalive_sample and self.ws and
+                self.last_speech_t and now - self.last_speech_t >= KEEPALIVE_INTERVAL_S and
+                now - self.last_keepalive_t >= KEEPALIVE_INTERVAL_S):
+            try:
+                await self.ws.send(self.keepalive_sample)
+                self.last_keepalive_t = now
+                self.suppress_until = now + KEEPALIVE_SUPPRESS_S
+                print(f"[v23:{self.name}] نبضة حياة (ضجيج هادئ طويل)", flush=True)
+            except Exception:
+                pass
 
     async def _reconnect(self):
         """إعادة فضم المحرك الميت تلقائياً (Telnyx يغلق على الضجيج الطويل)."""
@@ -164,6 +249,10 @@ class EngineSession:
                 d = json.loads(raw)
                 t = (d.get("transcript") or "").strip()
                 if not t:
+                    continue
+                # 🔥 رد نبضة الحياة (صوت حقيقي أُعيد بثه فقط ليبقي المحرك دافئاً)
+                # يُكتم كلياً — ليس محتوى حقيقياً من المتحدث الآن.
+                if time.time() < self.suppress_until:
                     continue
                 # 🛡️ القاعدة الذهبية: نتيجة قصيرة جاءت بعد نبض صمت = هلوسة صمت
                 came_after_pulse = self.final_after_pulse and self.pulse_sent > 0
@@ -237,9 +326,10 @@ async def translator_worker(ws, langs=("ar", "en"), tts_on=False):
                     continue
                 loop = asyncio.get_running_loop()
                 try:
+                    # مهلة 10s: gtx (محاولتان×3s) + مزود احتياطي (3s) في أسوأ حال
                     translated = await asyncio.wait_for(
                         loop.run_in_executor(EXECUTOR, translate_sync, text, target),
-                        timeout=6)
+                        timeout=10)
                 except Exception as e:
                     print(f"[v23] ترجمة فشلت: {type(e).__name__}: {str(e)[:60]}", flush=True)
                     translated = ""
@@ -266,8 +356,12 @@ async def translator_worker(ws, langs=("ar", "en"), tts_on=False):
                     if d.get("is_final"):
                         d["_src"] = sess.name
                         pending.append(d)
-                        print(f"[v23:{sess.name}] is_final: '{t[:35]}'", flush=True)
-                        crown_at[0] = time.time() + 0.35
+                        # 👑 نافذة تتويج متغيرة: نص "جزء" مشبوه (قصير، بلا ترقيم
+                        # ختامي) يحصل على نافذة أطول ليلحق به is_final الكامل
+                        # من Cohere ضمن نفس الدفعة بدل تتويجه منفرداً كترجمة ناقصة.
+                        wait = CROWN_WAIT_FRAGMENT_S if _looks_fragment(t) else CROWN_WAIT_S
+                        print(f"[v23:{sess.name}] is_final: '{t[:35]}' (نافذة {wait}s)", flush=True)
+                        crown_at[0] = time.time() + wait
                     elif t and len(t.split()) >= 2:
                         # 📡 عرض فوري (partial): المستخدم يرى الجملة وهي تُقال
                         try:
