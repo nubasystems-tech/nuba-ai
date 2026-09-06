@@ -54,6 +54,13 @@ async def hello(request: Request, body: dict = None):
 @router.get("/agent/next-task")
 async def next_task(request: Request, worker: str = "?"):
     _auth(request)
+    # استرجاع: عامل مات بعد التقاط مهمة → أعد الالتزامات الأقدم من 15 دقيقة للطابور
+    # (مهلة المهمة 10 دقائق، فـ 15 دقيقة تعني أن الالتزام ميت فعلاً)
+    now = time.time()
+    for t in TASKS:
+        if t["status"].startswith("claimed:") and now - t.get("claimed", 0) > 900:
+            t["status"] = "queued"
+            print(f"[agent] استرجاع مهمة {t['task_id']} — الالتزام مات", flush=True)
     for t in TASKS:
         if t["status"] == "queued":
             t["status"] = f"claimed:{worker}"

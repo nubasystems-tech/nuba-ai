@@ -313,8 +313,17 @@ async def duo_lang_worker(user_ws: WebSocket, lang_a: str, lang_b: str, tts_on: 
         # قياس 16:39: [en] التقط الفرنسية «Nous devons...» لكن _lang_of=fr أسقطه
         # → بقي الصدى «ندوغو انفستير...» وحيداً وتُوِّج بالعربية (اتجاه معكوس).
         _latin_pure = lambda t: (not any("\u0600" <= c <= "\u06FF" for c in t)) and len(t.split()) >= 3
-        foreign_proof = any(it[0] != "ar" for it in valid) or \
-            any(l in ("en", "fr") and _latin_pure(t) for (l, t, c) in items)
+        # 🛡️ إصلاح هلوسة ميدانية (سجل طارق 12:04): كلام عربي حقيقي عبر ميكروفون
+        # هاتف → Cohere ar صحيح + صدى لاتيني هلوسي عبر en ("Stay with us",
+        # "Thank you" لم تُقل أبداً). قاعدة الكرسي القديمة كانت تحذف العربي
+        # الصحيح لمجرد وجود أي لاتيني! الشرط الجديد: العربي الصحيح يُحذف فقط
+        # إذا كان قصيراً (شظية ≤4 كلمات) أو ورد متنافس لاتيني **طويل حقيقي**
+        # (≥6 كلمات — جملة أجنبية كاملة فعلية لا هلوسة قصيرة).
+        ar_items = [it for it in valid if it[0] == "ar"]
+        ar_long = any(len(it[1].split()) >= 5 for it in ar_items)
+        foreign_long = any(l in ("en", "fr") and _latin_pure(t) and len(t.split()) >= 6
+                           for (l, t, c) in items)
+        foreign_proof = (any(it[0] != "ar" for it in valid) and not ar_long) or foreign_long
         if foreign_proof:
             valid = [it for it in valid if it[0] != "ar"]
         if not valid:
@@ -710,8 +719,17 @@ async def multi_lang_worker(user_ws: WebSocket, tts_lang: str, fan_langs=None):
         # أسقطه الفلتر الصارم (قياس 16:39: [en] التقط «Nous devons...» لكن
         # _lang_of=fr أسقطه → تُوِّج الصدى العربي وحيداً باتجاه معكوس).
         _latin_pure = lambda t: (not any("\u0600" <= c <= "\u06FF" for c in t)) and len(t.split()) >= 3
-        foreign_proof = any(it[0] != "ar" for it in valid) or \
-            any(l in ("en", "fr") and _latin_pure(t) for (l, t, c) in items)
+        # 🛡️ إصلاح هلوسة ميدانية (سجل طارق 12:04): كلام عربي حقيقي عبر ميكروفون
+        # هاتف → Cohere ar صحيح + صدى لاتيني هلوسي عبر en ("Stay with us",
+        # "Thank you" لم تُقل أبداً). قاعدة الكرسي القديمة كانت تحذف العربي
+        # الصحيح لمجرد وجود أي لاتيني! الشرط الجديد: العربي الصحيح يُحذف فقط
+        # إذا كان قصيراً (شظية ≤4 كلمات) أو ورد متنافس لاتيني **طويل حقيقي**
+        # (≥6 كلمات — جملة أجنبية كاملة فعلية لا هلوسة قصيرة).
+        ar_items = [it for it in valid if it[0] == "ar"]
+        ar_long = any(len(it[1].split()) >= 5 for it in ar_items)
+        foreign_long = any(l in ("en", "fr") and _latin_pure(t) and len(t.split()) >= 6
+                           for (l, t, c) in items)
+        foreign_proof = (any(it[0] != "ar" for it in valid) and not ar_long) or foreign_long
         if foreign_proof:
             valid = [it for it in valid if it[0] != "ar"]
         if not valid:

@@ -14,18 +14,37 @@ import urllib.request
 import urllib.error
 import os
 import tempfile
+import threading
+import socket
 
 SERVER = "http://100.77.139.53:8000"   # خادم Hermes عبر Tailscale (ثابت!)
 WORKER_ID = os.environ.get("COMPUTERNAME", "DELL-")
 POLL_SEC = 30
 TOKEN = "nuba-worker-2026"             # مصادقة بسيطة (شبكة Tailscale خاصة أصلاً)
 
+# ── حارس ضد التعليق الدائم ──
+# نوم اللابتوب قد يعلّق urlopen إلى الأبد رغم timeout، وسياسة IgnoreNew
+# تمنع تكرار المهمة (كل 5 دقائق) من إحياء نسخة جديدة. الحارس يقتل
+# العملية بعد 3 دقائق تعليق → RestartCount/التكرار يعيدانها خلال دقيقتين.
+_last_loop = time.time()
+_task_deadline = 0.0
 
-def api(path, data=None, timeout=20):
+
+def _watchdog():
+    while True:
+        time.sleep(30)
+        now = time.time()
+        if now - _last_loop > 180 and now > _task_deadline:
+            print("[nuba-worker] watchdog: main loop hung >3min - exiting for auto-restart", flush=True)
+            os._exit(3)
+
+
+def api(path, data=None, timeout=12):
     req = urllib.request.Request(
         SERVER + path,
         data=json.dumps(data).encode() if data else None,
-        headers={"Content-Type": "application/json", "X-Worker-Token": TOKEN},
+        headers={"Content-Type": "application/json", "X-Worker-Token": TOKEN,
+                 "Connection": "close"},
         method="POST" if data else "GET")
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
@@ -49,7 +68,7 @@ def run_task(task):
             # سطر أوامر (PowerShell) — مهلة 10 دقائق
             p = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", payload],
-                capture_output=True, text=True, timeout=600)
+                capture_output=True, text=True, errors="replace", timeout=600)
             out = (p.stdout or "")[-8000:]
             err = (p.stderr or "")[-2000:]
             return {"ok": p.returncode == 0, "code": p.returncode,
@@ -60,7 +79,7 @@ def run_task(task):
                 f.write(payload)
                 path = f.name
             p = subprocess.run([sys.executable or "python", path],
-                               capture_output=True, text=True, timeout=600)
+                               capture_output=True, text=True, errors="replace", timeout=600)
             os.unlink(path)
             return {"ok": p.returncode == 0, "code": p.returncode,
                     "output": (p.stdout or "")[-8000:], "error": (p.stderr or "")[-2000:],
@@ -75,10 +94,25 @@ def run_task(task):
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+def _acquire_single_instance_lock():
+    """قفل نسخة واحدة: منع تضاعف العامل (مفتاح Run + مهمة مجدولة معاً)"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", 57777))
+    except OSError:
+        print("[nuba-worker] نسخة أخرى تعمل بالفعل — خروج", flush=True)
+        os._exit(0)
+    return s
+
+
 def main():
+    global _last_loop, _task_deadline
+    _lock = _acquire_single_instance_lock()  # تبقى مفتوحة طوال حياة العملية
+    threading.Thread(target=_watchdog, daemon=True).start()
     print(f"[nuba-worker] جاهز — {WORKER_ID} → {SERVER}")
     last_seen = 0
     while True:
+        _last_loop = time.time()
         # 1) تسجيل حضور (كل دقيقة)
         if time.time() - last_seen > 60:
             r = api("/agent/hello", {"worker": WORKER_ID, "ts": time.time()})
@@ -88,8 +122,10 @@ def main():
         # 2) طلب مهمة
         task = api(f"/agent/next-task?worker={WORKER_ID}")
         if task and task.get("task_id"):
-            print(f"[nuba-worker] مهمة {task['task_id']}: {task.get('kind')} — {str(task.get('payload',''))[:80]}")
+            print(f"[nuba-worker] مهمة {task['task_id']}: {task.get('kind')} — {str(task.get('payload',''))[:80]}", flush=True)
+            _task_deadline = time.time() + 630   # نافذة تنفيذ مشروعة للمهمة (10د + هامش)
             result = run_task(task)
+            _task_deadline = 0
             report = api("/agent/report", {
                 "task_id": task["task_id"], "worker": WORKER_ID,
                 "result": result, "ts": time.time()})
